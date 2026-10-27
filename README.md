@@ -1,0 +1,214 @@
+# panda_moveit
+
+Two Franka Panda arms share a tabletop in Gazebo Harmonic, controlled through MoveIt 2 on ROS 2 Jazzy. The package includes:
+
+- **Pick-and-place for either arm:** grasp, lift, transport and release, holding the cube with a Gazebo `DetachableJoint`.
+- **A seeded scenario randomizer:** drop-off trays, 3–6 obstacles, 12 cubes and the arms' start poses. A saved scenario can be re-applied exactly.
+- **Data collection:** both arms are planned on the identical scene, one executes, and the run is logged with costs, planning times, joint states and before/after RGB-D frames.
+
+It was built for a learning project: train a model that predicts which arm should take a pick-and-place task, and compare it with planning both arms, which is the no-model baseline. [CONTEXT.md](CONTEXT.md) covers the design, conventions and known pitfalls.
+
+![Overhead RGB camera before and after a demonstration](docs/before_after.png)
+
+## Requirements
+
+- Ubuntu 24.04
+- ROS 2 Jazzy
+- Gazebo Harmonic (the version that comes with Jazzy's `ros_gz`)
+- MoveIt 2
+
+All other dependencies are listed in `package.xml` and installed by `rosdep`.
+
+## Installation
+
+```bash
+# Clone into the src folder of a colcon workspace
+mkdir -p ~/ros2_ws/src
+cd ~/ros2_ws/src
+git clone <repository-url> panda_moveit
+
+# Install dependencies
+cd ~/ros2_ws
+source /opt/ros/jazzy/setup.bash
+sudo rosdep init   # only the first time rosdep is used on this machine
+rosdep update
+rosdep install --from-paths src --ignore-src -y
+
+# Build
+colcon build --packages-select panda_moveit --symlink-install
+source install/setup.bash
+```
+
+Use `--symlink-install`. It lets edits to configs, worlds and scripts take effect without a rebuild. The scripts also expect to run from the source folder.
+
+## Launch the simulation
+
+```bash
+cd ~/ros2_ws
+source install/setup.bash
+ros2 launch panda_moveit panda_moveit.launch.py
+```
+
+This one command starts:
+- Gazebo with the table world
+- both arms, each with its own `ros2_control` controllers
+- MoveIt's `move_group` and RViz
+- the helper nodes: joint-state merger, trajectory adapter and planning-scene setup
+
+Wait until both arms are in their `ready` pose and RViz shows the planning scene before running any script.
+
+Keep the launch running in its own terminal. Run every command below from another terminal, from the workspace root, after `source install/setup.bash`.
+
+## Pick and place
+
+```bash
+# Plan only (nothing moves); prints each stage and writes /tmp/panda_pick_place_<arm>.json
+python3 src/panda_moveit/panda_moveit/pick_place.py --arm first
+
+# Execute in Gazebo
+python3 src/panda_moveit/panda_moveit/pick_place.py --arm first --execute
+python3 src/panda_moveit/panda_moveit/pick_place.py --arm second --cube cube_blue --dropoff dropoff_a --execute
+```
+
+| Option | Meaning |
+|---|---|
+| `--arm first\|second` | Which Panda to use. Panda 1 sits at x = 0.2, Panda 2 at x = 1.5. |
+| `--cube NAME` | Cube to pick: `cube_red`, `cube_blue`, `cube_green`, `cube_yellow`, `cube_purple`, `cube_orange`, `cube_cyan`, `cube_pink`, `cube_black`, `cube_lime`, `cube_teal` or `cube_magenta`. |
+| `--dropoff dropoff_a\|dropoff_b` | Tray to place the cube in. Positions are read live from Gazebo. |
+| `--place X Y` | Place at a world XY position instead of a tray. |
+| `--speed`, `--accel` | Fraction of the joint velocity and acceleration limits. Default 0.5. |
+| `--reset` | First return the cube to its starting position in the world file. |
+
+## Randomize the scene
+
+```bash
+python3 src/panda_moveit/panda_moveit/scenario.py --seed 7                         # generate, apply, save to /tmp/scenarios/
+python3 src/panda_moveit/panda_moveit/scenario.py --file /tmp/scenarios/scenario_7.json   # re-apply exactly
+python3 src/panda_moveit/panda_moveit/scenario.py --seed 7 --dry-run               # print only
+```
+
+A scenario sets:
+- **Trays:** both moved to random spots that both arms can reach.
+- **Obstacles:** 3–6 walls and blocks.
+- **Cubes:** all 12, each reachable by at least one arm, and 6 reachable by both.
+- **Arm start poses:** random poses that MoveIt reports as collision-free.
+
+The same seed always gives the same scenario.
+
+## Collecting demonstrations
+
+`demonstrations.py` runs a batch of scenarios unattended. Each scenario goes through these steps:
+
+1. Randomize the table, then capture the **before** RGB-D frame and the joint states.
+2. Choose a task (a cube and a tray) that at least one arm can complete.
+3. Plan the full pick-and-place with **both** arms, 3 plans each, recording the cost and MoveIt planning time of every attempt.
+4. **Execute** with the arm whose plan has the lower cost, then move it back to its start pose.
+5. Capture the **after** frame, joint states and the final pose of every cube, and write it all to disk.
+
+### Steps
+
+1. Start the simulation in terminal 1 (see [Launch the simulation](#launch-the-simulation)) and wait for the `ready` pose.
+2. In terminal 2:
+   ```bash
+   cd ~/ros2_ws
+   source install/setup.bash
+   python3 src/panda_moveit/panda_moveit/demonstrations.py --count 10
+   ```
+3. Leave it running; nothing needs to be typed. The output looks like this:
+   ```text
+   Randomizing pieces
+   Running Scenario 1...
+   Completed Scenario 1...
+       cube_cyan -> dropoff_a, 6 obstacles | cost first 9.90, second 8.87 | second arm completed it
+   Write data for scenario 1 to file for demonstration
+   Randomizing pieces
+   Running Scenario 2...
+   ...
+   Done: 10/10 scenarios completed. Data in .../panda_moveit/data
+   ```
+   A scenario takes about 15–20 s. If a scenario fails, the error is logged and the run continues with the next one.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--count N` | 10 | Number of scenarios. |
+| `--seed-start S` | random | Seeds are S, S+1, …, so the same command reproduces the same scenes. |
+| `--repeats R` | 3 | Plans per arm per task. OMPL is random, so the cost label is the best of R. |
+| `--out DIR` | `panda_moveit/data` | Output folder. |
+| `--speed`, `--accel` | 0.5 | Keep these fixed within one dataset, since trajectory times depend on them. |
+
+### Output
+
+```text
+data/
+├── camera.json                  # intrinsics (K) and world pose of the overhead camera
+├── demonstrations.jsonl         # one summary line per scenario
+└── scenario_001_seed137485/
+    ├── before_rgb.png           # 960x720 RGB, before the task
+    ├── before_depth.npy         # float32 depth in metres, same frame
+    ├── after_rgb.png
+    ├── after_depth.npy
+    └── record.json              # everything else (see below)
+```
+
+`record.json` contains:
+
+| Key | Contents |
+|---|---|
+| `scenario` | Trays, obstacles (size, pose), all 12 cube poses, both arms' start joints. |
+| `task` | Cube and its pose, drop-off tray and its pose, place target. |
+| `arms.first`, `arms.second` | Every planned attempt: success, failed stage, cost, total time `T`, joint path length `L`, MoveIt planning time, wall time, stage-by-stage results with joint trajectories. Also feasibility and best cost. |
+| `planner_assignment` | Assigned arm, both costs, `baseline_decision_time` (planning both arms once: the time a learned model should beat). |
+| `execution` | Executed stages and trajectories, cost, final cube pose, place error, displacement of the other cubes. |
+| `completed_by` | Arm that completed the task, or `null` if execution failed. |
+| `joint_states` | Both arms' joint positions before and after. |
+| `cube_poses_before` / `cube_poses_after` | Live poses of every cube from Gazebo. |
+| `rejected_tasks` | Tasks skipped because neither arm could do them. |
+
+Cost is `C = T_total + 1.0 * L_total`, where `T_total` is total trajectory time in seconds and `L_total` is total joint path length in radians, both summed over all motion stages. The separate terms are stored too, so a different weighting can be used later.
+
+### Large plan-only datasets
+
+`collect.py` skips execution and only plans. That's much faster, roughly 10–20 s per scenario with 4 tasks, and suits building a large training set of planner costs:
+
+```bash
+python3 src/panda_moveit/panda_moveit/collect.py --seeds 0 500 --out ~/panda_data
+python3 src/panda_moveit/panda_moveit/collect.py --seeds 0 20 --execute --out ~/panda_data_exec
+```
+
+It can resume: seeds already in `trials.jsonl` are skipped.
+
+## Viewing the camera in Gazebo
+
+1. In the Gazebo window, click the **⋮** menu in the top-right corner.
+2. Search for **Image Display** and open it.
+3. Refresh the topic list, then choose `/overhead_camera/image` (color) or `/overhead_camera/depth_image` (depth).
+
+The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`, add a `ros_gz_bridge` image bridge.
+
+## Package layout
+
+| Path | Purpose |
+|---|---|
+| `launch/panda_moveit.launch.py` | Starts everything: Gazebo, both arms, controllers, MoveIt, RViz, helper nodes. |
+| `worlds/panda_world.sdf` | Table, 12 cubes, 2 drop-off trays, starting wall, overhead RGB-D camera. |
+| `config/urdf/panda.urdf.xacro` | Single Panda for Gazebo (both arms are spawned from it). |
+| `config/urdf/dual_panda.urdf` | Combined MoveIt model with `first_` and `second_` prefixes. Generated by `create_dual_panda.py`. |
+| `config/dual_panda.srdf` | MoveIt groups: `first_panda_arm`, `second_panda_arm`, `both_panda_arms`, hands. |
+| `config/ros2_controllers*.yaml` | Per-arm `ros2_control` controllers, including goal tolerances. |
+| `config/dual_moveit_controllers.yaml`, `config/dual_kinematics.yaml` | MoveIt controller mapping and KDL kinematics. |
+| `panda_moveit/pick_place.py` | Pick-and-place pipeline, gripper control, Gazebo and planning-scene helpers. |
+| `panda_moveit/scenario.py` | Scenario generator and applier. |
+| `panda_moveit/demonstrations.py` | Unattended plan-both-execute-best demonstrations. |
+| `panda_moveit/collect.py` | Plan-only paired-trial collector; also the camera capture code. |
+| `panda_moveit/dual_joint_states.py` | Merges both arms' joint states into `/dual_joint_states` with prefixed names. |
+| `panda_moveit/dual_trajectory_adapter.py` | Forwards MoveIt trajectories to each arm's Gazebo controller. |
+| `panda_moveit/planning_scene_setup.py` | Loads the table, cubes, trays and obstacles from the world into MoveIt at startup. |
+| `create_dual_panda.py` | Regenerates `dual_panda.urdf` from the xacro. Run it from the package root. |
+| `panda_moveit/panda_controller.py`, `panda_moveit/move_panda.py`, `test_trajectory.py` | Early single-arm experiments, kept for reference. |
+
+## Troubleshooting
+
+- **`MoveIt request timed out` / `/move_action unavailable`:** the launch isn't fully up yet. Wait for the `ready` pose and RViz's planning scene.
+- **A stage fails with a goal tolerance error:** the arm couldn't follow the trajectory at the requested speed. Try `--speed 0.3`.
+- **`stopped while holding the cube`:** a run stopped mid-task. Applying any scenario releases every cube and resets the table. `pick_place.py --cube <name> --reset` releases just that cube.
+- **Changes to the world or controller configs have no effect:** Gazebo and the controllers only read them at launch. Restart the launch.

@@ -1,0 +1,34 @@
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# colcon output, if a build is ever run from inside the package
+build/
+install/
+log/
+
+# Collected data: large, regenerate with demonstrations.py / collect.py
+data/
+
+# Backups
+*.bak
+*_backup.*
+*_original.*
+config/dual_panda_before_collisions.srdf
+
+# Generated TF / URDF graphs (ros2 run tf2_tools view_frames, urdf_to_graphviz)
+frames_*.gv
+frames_*.pdf
+dual_panda.gv
+dual_panda.pdf
+
+# Outdated generator: writes the original 8-cube world over worlds/panda_world.sdf
+create_workspace.py

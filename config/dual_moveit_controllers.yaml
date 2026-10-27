@@ -1,0 +1,33 @@
+
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - first
+    - second
+
+  first:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - first_panda_joint1
+      - first_panda_joint2
+      - first_panda_joint3
+      - first_panda_joint4
+      - first_panda_joint5
+      - first_panda_joint6
+      - first_panda_joint7
+
+  second:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - second_panda_joint1
+      - second_panda_joint2
+      - second_panda_joint3
+      - second_panda_joint4
+      - second_panda_joint5
+      - second_panda_joint6
+      - second_panda_joint7

@@ -1,0 +1,56 @@
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    panda_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    panda_gripper_controller:
+      type: position_controllers/JointGroupPositionController
+
+panda_gripper_controller:
+  ros__parameters:
+    joints:
+      - panda_finger_joint1
+      - panda_finger_joint2
+
+panda_arm_controller:
+  ros__parameters:
+    joints:
+      - panda_joint1
+      - panda_joint2
+      - panda_joint3
+      - panda_joint4
+      - panda_joint5
+      - panda_joint6
+      - panda_joint7
+
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+
+
+    # Report success only once the arm has actually arrived: within 0.005 rad
+    # of the final point and stopped, waiting up to goal_time seconds after
+    # the trajectory ends. Without this the controller succeeds on time alone
+    # and fast trajectories leave the arm still moving. 0.005 rad keeps it
+    # inside MoveIt's 0.01 rad allowed_start_tolerance for the next motion.
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 2.0
+      panda_joint1: {trajectory: 0.0, goal: 0.005}
+      panda_joint2: {trajectory: 0.0, goal: 0.005}
+      panda_joint3: {trajectory: 0.0, goal: 0.005}
+      panda_joint4: {trajectory: 0.0, goal: 0.005}
+      panda_joint5: {trajectory: 0.0, goal: 0.005}
+      panda_joint6: {trajectory: 0.0, goal: 0.005}
+      panda_joint7: {trajectory: 0.0, goal: 0.005}

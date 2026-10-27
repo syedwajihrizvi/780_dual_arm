@@ -1,0 +1,946 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.10">
+<world name="panda_world">
+<physics name="1ms" type="ignored">
+<max_step_size>0.001</max_step_size>
+<real_time_factor>1</real_time_factor>
+<real_time_update_rate>1000</real_time_update_rate>
+</physics>
+<plugin name="gz::sim::systems::Physics" filename="gz-sim-physics-system" />
+<plugin name="gz::sim::systems::UserCommands" filename="gz-sim-user-commands-system" />
+<plugin name="gz::sim::systems::SceneBroadcaster" filename="gz-sim-scene-broadcaster-system" />
+<plugin
+filename="gz-sim-sensors-system"
+name="gz::sim::systems::Sensors">
+<render_engine>ogre2</render_engine>
+</plugin>
+<gui fullscreen="false">
+<plugin name="3D View" filename="GzScene3D">
+<gz-gui>
+<title>3D View</title>
+<property type="bool" key="showTitleBar">false</property>
+<property type="string" key="state">docked</property>
+</gz-gui>
+<engine>ogre2</engine>
+<scene>scene</scene>
+<ambient_light>0.4 0.4 0.4</ambient_light>
+<background_color>0.8 0.8 0.8</background_color>
+<camera_pose>2 2 2 0 0.5 -2.5</camera_pose>
+</plugin>
+<plugin name="World control" filename="WorldControl">
+<gz-gui>
+<title>World control</title>
+<property type="bool" key="showTitleBar">false</property>
+<property type="bool" key="resizable">false</property>
+<property type="double" key="height">72</property>
+<property type="double" key="width">121</property>
+<property type="double" key="z">1</property>
+<property type="string" key="state">floating</property>
+<anchors target="3D View">
+<line own="left" target="left" />
+<line own="bottom" target="bottom" />
+</anchors>
+</gz-gui>
+<play_pause>true</play_pause>
+<step>true</step>
+<start_paused>true</start_paused>
+</plugin>
+<plugin name="World stats" filename="WorldStats">
+<gz-gui>
+<title>World stats</title>
+<property type="bool" key="showTitleBar">false</property>
+<property type="bool" key="resizable">false</property>
+<property type="double" key="height">110</property>
+<property type="double" key="width">290</property>
+<property type="double" key="z">1</property>
+<property type="string" key="state">floating</property>
+<anchors target="3D View">
+<line own="right" target="right" />
+<line own="bottom" target="bottom" />
+</anchors>
+</gz-gui>
+<sim_time>true</sim_time>
+<real_time>true</real_time>
+<real_time_factor>true</real_time_factor>
+<iterations>true</iterations>
+</plugin>
+<plugin name="JointPositionController" filename="JointPositionController">
+<gz-gui>
+<property type="double" key="height">600</property>
+<property type="double" key="width">400</property>
+<property type="string" key="state">floating</property>
+<anchors target="3D View">
+<line own="right" target="right" />
+<line own="top" target="top" />
+</anchors>
+</gz-gui>
+<model_name>panda</model_name>
+</plugin>
+</gui>
+<gravity>0 0 -9.8000000000000007</gravity>
+<magnetic_field>5.5644999999999998e-06 2.2875799999999999e-05 -4.2388400000000002e-05</magnetic_field>
+<atmosphere type="adiabatic" />
+<scene>
+<ambient>0.400000006 0.400000006 0.400000006 1</ambient>
+<background>0.699999988 0.699999988 0.699999988 1</background>
+<shadows>true</shadows>
+</scene>
+<model name="ground_plane">
+<static>true</static>
+<link name="link">
+<collision name="collision">
+<geometry>
+<plane>
+<normal>0 0 1</normal>
+<size>100 100</size>
+</plane>
+</geometry>
+<surface>
+<friction>
+<ode />
+</friction>
+<bounce />
+<contact />
+</surface>
+</collision>
+<visual name="visual">
+<geometry>
+<plane>
+<normal>0 0 1</normal>
+<size>100 100</size>
+</plane>
+</geometry>
+<material>
+<ambient>0.800000012 0.800000012 0.800000012 1</ambient>
+<diffuse>0.800000012 0.800000012 0.800000012 1</diffuse>
+<specular>0.800000012 0.800000012 0.800000012 1</specular>
+</material>
+</visual>
+<pose>0 0 0 0 0 0</pose>
+<inertial>
+<pose>0 0 0 0 0 0</pose>
+<mass>1</mass>
+<inertia>
+<ixx>1</ixx>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyy>1</iyy>
+<iyz>0</iyz>
+<izz>1</izz>
+</inertia>
+</inertial>
+<enable_wind>false</enable_wind>
+</link>
+<pose>0 0 0 0 0 0</pose>
+<self_collide>false</self_collide>
+</model>
+<light name="sun" type="directional">
+<pose>0 0 10 0 0 0</pose>
+<cast_shadows>true</cast_shadows>
+<intensity>1</intensity>
+<direction>-0.5 0.10000000000000001 -0.90000000000000002</direction>
+<diffuse>0.800000012 0.800000012 0.800000012 1</diffuse>
+<specular>0.200000003 0.200000003 0.200000003 1</specular>
+<attenuation>
+<range>1000</range>
+<linear>0.01</linear>
+<constant>0.90000000000000002</constant>
+<quadratic>0.001</quadratic>
+</attenuation>
+<spot>
+<inner_angle>0</inner_angle>
+<outer_angle>0</outer_angle>
+<falloff>0</falloff>
+</spot>
+</light>
+<model name="workbench">
+<static>true</static>
+<pose>0.7 0 0 0 0 0</pose>
+<link name="tabletop">
+<pose>0 0 0.9999999999999999 0 0 0</pose>
+<collision name="tabletop_collision">
+<geometry>
+<box>
+<size>2.3 1.2 0.05</size>
+</box>
+</geometry>
+</collision>
+<visual name="tabletop_visual">
+<geometry>
+<box>
+<size>2.3 1.2 0.05</size>
+</box>
+</geometry>
+<material>
+<ambient>0.55 0.4 0.25 1.0</ambient>
+<diffuse>0.55 0.4 0.25 1.0</diffuse>
+</material>
+</visual>
+</link>
+<link name="leg_1">
+<pose>-1.02 -0.48 0.48749999999999993 0 0 0</pose>
+<collision name="leg_1_collision">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+</collision>
+<visual name="leg_1_visual">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+<material>
+<ambient>0.35 0.35 0.38 1.0</ambient>
+<diffuse>0.35 0.35 0.38 1.0</diffuse>
+</material>
+</visual>
+</link>
+<link name="leg_2">
+<pose>-1.02 0.48 0.48749999999999993 0 0 0</pose>
+<collision name="leg_2_collision">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+</collision>
+<visual name="leg_2_visual">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+<material>
+<ambient>0.35 0.35 0.38 1.0</ambient>
+<diffuse>0.35 0.35 0.38 1.0</diffuse>
+</material>
+</visual>
+</link>
+<link name="leg_3">
+<pose>1.02 -0.48 0.48749999999999993 0 0 0</pose>
+<collision name="leg_3_collision">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+</collision>
+<visual name="leg_3_visual">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+<material>
+<ambient>0.35 0.35 0.38 1.0</ambient>
+<diffuse>0.35 0.35 0.38 1.0</diffuse>
+</material>
+</visual>
+</link>
+<link name="leg_4">
+<pose>1.02 0.48 0.48749999999999993 0 0 0</pose>
+<collision name="leg_4_collision">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+</collision>
+<visual name="leg_4_visual">
+<geometry>
+<box>
+<size>0.08 0.08 0.9749999999999999</size>
+</box>
+</geometry>
+<material>
+<ambient>0.35 0.35 0.38 1.0</ambient>
+<diffuse>0.35 0.35 0.38 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_red">
+<static>false</static>
+<pose>0.73 -0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.9 0.1 0.1 1.0</ambient>
+<diffuse>0.9 0.1 0.1 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_blue">
+<static>false</static>
+<pose>0.88 -0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.1 0.3 0.9 1.0</ambient>
+<diffuse>0.1 0.3 0.9 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_green">
+<static>false</static>
+<pose>1.03 -0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.1 0.8 0.2 1.0</ambient>
+<diffuse>0.1 0.8 0.2 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_yellow">
+<static>false</static>
+<pose>1.18 -0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.9 0.8 0.1 1.0</ambient>
+<diffuse>0.9 0.8 0.1 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_purple">
+<static>false</static>
+<pose>0.73 0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.5 0.2 0.8 1.0</ambient>
+<diffuse>0.5 0.2 0.8 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_orange">
+<static>false</static>
+<pose>0.88 0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>1.0 0.4 0.1 1.0</ambient>
+<diffuse>1.0 0.4 0.1 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_cyan">
+<static>false</static>
+<pose>1.03 0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.1 0.8 0.9 1.0</ambient>
+<diffuse>0.1 0.8 0.9 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_pink">
+<static>false</static>
+<pose>1.18 0.16 1.0454999999999999 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.9 0.3 0.6 1.0</ambient>
+<diffuse>0.9 0.3 0.6 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_black">
+<static>false</static>
+<pose>0.6 -0.3 1.0455 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.08 0.08 0.08 1.0</ambient>
+<diffuse>0.08 0.08 0.08 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_lime">
+<static>false</static>
+<pose>0.6 0.3 1.0455 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.6 0.95 0.1 1.0</ambient>
+<diffuse>0.6 0.95 0.1 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_teal">
+<static>false</static>
+<pose>1.1 -0.3 1.0455 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.0 0.5 0.45 1.0</ambient>
+<diffuse>0.0 0.5 0.45 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="cube_magenta">
+<static>false</static>
+<pose>1.1 0.3 1.0455 0 0 0</pose>
+<link name="cube_link">
+<inertial>
+<mass>0.08</mass>
+<inertia>
+<ixx>2.1333333333333338e-05</ixx>
+<iyy>2.1333333333333338e-05</iyy>
+<izz>2.1333333333333338e-05</izz>
+<ixy>0</ixy>
+<ixz>0</ixz>
+<iyz>0</iyz>
+</inertia>
+</inertial>
+<collision name="cube_collision">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+</collision>
+<visual name="cube_visual">
+<geometry>
+<box>
+<size>0.04 0.04 0.04</size>
+</box>
+</geometry>
+<material>
+<ambient>0.9 0.1 0.9 1.0</ambient>
+<diffuse>0.9 0.1 0.9 1.0</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<!-- Wall Obstacles -->
+<!-- Obstacle 1: short central wall -->
+<model name="obstacle_wall_1">
+<static>true</static>
+<!-- World pose: center of the wall -->
+<pose>0.95 0.0 1.085 0 0 0</pose>
+<link name="wall_link">
+<collision name="wall_collision">
+<geometry>
+<box>
+<size>0.30 0.03 0.30</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_visual">
+<geometry>
+<box>
+<size>0.30 0.03 0.30</size>
+</box>
+</geometry>
+<material>
+<ambient>0.30 0.35 0.40 1</ambient>
+<diffuse>0.45 0.50 0.55 1</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="dropoff_a">
+<static>true</static>
+<!-- World pose: tray centre on the table top -->
+<pose>0.85 -0.42 1.025 0 0 0</pose>
+<link name="tray_link">
+<collision name="wall_neg_y_collision">
+<pose>0 -0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_neg_y_visual">
+<pose>0 -0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+<collision name="wall_pos_y_collision">
+<pose>0 0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_pos_y_visual">
+<pose>0 0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+<collision name="wall_neg_x_collision">
+<pose>-0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_neg_x_visual">
+<pose>-0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+<collision name="wall_pos_x_collision">
+<pose>0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_pos_x_visual">
+<pose>0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<model name="dropoff_b">
+<static>true</static>
+<!-- World pose: tray centre on the table top -->
+<pose>0.85 0.42 1.025 0 0 0</pose>
+<link name="tray_link">
+<collision name="wall_neg_y_collision">
+<pose>0 -0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_neg_y_visual">
+<pose>0 -0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+<collision name="wall_pos_y_collision">
+<pose>0 0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_pos_y_visual">
+<pose>0 0.085 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.18 0.01 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+<collision name="wall_neg_x_collision">
+<pose>-0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_neg_x_visual">
+<pose>-0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+<collision name="wall_pos_x_collision">
+<pose>0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+</collision>
+<visual name="wall_pos_x_visual">
+<pose>0.085 0 0.015 0 0 0</pose>
+<geometry>
+<box>
+<size>0.01 0.16 0.03</size>
+</box>
+</geometry>
+<material>
+<ambient>0.8 0.8 0.8 1</ambient>
+<diffuse>0.8 0.8 0.8 1</diffuse>
+</material>
+</visual>
+</link>
+</model>
+<!-- Fixed overhead RGB-D camera -->
+<model name="overhead_rgbd">
+<static>true</static>
+<!-- World pose: above the midpoint between the arm bases (x 0.2 and 1.5),
+     looking down. Yaw pi/2 lines the image width up with the table's long
+     axis: image right = world +x (Panda 2), image down = world -y. 2.6 m keeps
+     both arms fully in view. -->
+<pose>0.85 0 2.6 0 1.57079632679 1.57079632679</pose>
+<link name="camera_link">
+<!-- Visible RGB-D camera housing -->
+<visual name="camera_body">
+  <geometry>
+    <box>
+      <size>0.12 0.08 0.05</size>
+    </box>
+  </geometry>
+
+  <material>
+    <ambient>0.08 0.08 0.10 1</ambient>
+    <diffuse>0.12 0.12 0.15 1</diffuse>
+    <specular>0.4 0.4 0.4 1</specular>
+  </material>
+</visual>
+
+<!-- Camera lens -->
+<visual name="camera_lens">
+  <pose>0.03 0 0 0 1.57079632679 0</pose>
+
+  <geometry>
+    <cylinder>
+      <radius>0.018</radius>
+      <length>0.015</length>
+    </cylinder>
+  </geometry>
+
+  <material>
+    <ambient>0.02 0.04 0.08 1</ambient>
+    <diffuse>0.03 0.06 0.12 1</diffuse>
+  </material>
+</visual>
+<sensor name="rgbd_sensor" type="rgbd_camera">
+<always_on>true</always_on>
+<update_rate>10</update_rate>
+<visualize>false</visualize>
+<topic>/overhead_camera</topic>
+<camera>
+<horizontal_fov>1.5708</horizontal_fov>
+<image>
+<width>960</width>
+<height>720</height>
+</image>
+<clip>
+<near>0.1</near>
+<far>4.0</far>
+</clip>
+</camera>
+</sensor>
+</link>
+</model>
+</world>
+</sdf>
