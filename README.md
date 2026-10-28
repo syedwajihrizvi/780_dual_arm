@@ -144,9 +144,9 @@ data/
 ├── demonstrations.jsonl         # one summary line per scenario
 └── scenario_001_seed137485/
     ├── before_rgb.png           # 960x720 RGB, before the task
-    ├── before_depth.npy         # float32 depth in metres, same frame
+    ├── before_depth.npz         # float32 depth in metres, key 'depth' (np.load(f)['depth'])
     ├── after_rgb.png
-    ├── after_depth.npy
+    ├── after_depth.npz
     └── record.json              # everything else (see below)
 ```
 
@@ -156,26 +156,38 @@ data/
 |---|---|
 | `scenario` | Trays, obstacles (size, pose), all 12 cube poses, both arms' start joints. |
 | `task` | Cube and its pose, drop-off tray and its pose, place target. |
-| `arms.first`, `arms.second` | Every planned attempt: success, failed stage, cost, total time `T`, joint path length `L`, MoveIt planning time, wall time, stage-by-stage results with joint trajectories. Also feasibility and best cost. |
+| `arms.first`, `arms.second` | Every planned attempt: success, failed stage, cost, total time `T`, joint path length `L`, MoveIt planning time, wall time, stage-by-stage results with joint trajectories. Also feasibility, `best_plan_index` and best cost. |
 | `planner_assignment` | Assigned arm, both costs, `baseline_decision_time` (planning both arms once: the time a learned model should beat). |
 | `execution` | Executed stages and trajectories, cost, final cube pose, place error, displacement of the other cubes. |
 | `completed_by` | Arm that completed the task, or `null` if execution failed. |
 | `joint_states` | Both arms' joint positions before and after. |
 | `cube_poses_before` / `cube_poses_after` | Live poses of every cube from Gazebo. |
 | `rejected_tasks` | Tasks skipped because neither arm could do them. |
+| `planner`, `cost_definition`, `speed`, `accel` | MoveIt settings used for every plan (planner, time limit, attempts, tolerances), the cost formula, and the speed scaling. |
 
 Cost is `C = T_total + 1.0 * L_total`, where `T_total` is total trajectory time in seconds and `L_total` is total joint path length in radians, both summed over all motion stages. The separate terms are stored too, so a different weighting can be used later.
 
-### Large plan-only datasets
+### Large plan-only datasets (training data)
 
-`collect.py` skips execution and only plans. That's much faster, roughly 10–20 s per scenario with 4 tasks, and suits building a large training set of planner costs:
+`collect.py` skips execution and only plans. That's much faster, roughly 15–20 s per scenario with 4 tasks, and is the source of training data for the generative policy and the cost module. Each arm plans each task `--repeats` times (default 3), and every plan is saved with its joint trajectories. The cheapest feasible plan (lowest `C`) is that arm's cost label.
 
 ```bash
-python3 src/panda_moveit/panda_moveit/collect.py --seeds 0 500 --out ~/panda_data
+python3 src/panda_moveit/panda_moveit/collect.py --seeds 0 2000 --out ~/panda_data
 python3 src/panda_moveit/panda_moveit/collect.py --seeds 0 20 --execute --out ~/panda_data_exec
 ```
 
-It can resume: seeds already in `trials.jsonl` are skipped.
+```text
+panda_data/
+├── camera.json
+├── trials.jsonl                     # one summary line per (seed, task): poses, both arms' feasibility and best cost
+├── trials/seed_<seed>_task_<i>.json # full record: every plan, stage by stage, with joint trajectories
+├── scenarios/scenario_<seed>.json   # full scene, incl. both arms' start joints
+└── images/scene_<seed>_rgb.png, scene_<seed>_depth.npz   # before any task; shared by the seed's tasks
+```
+
+It can resume: seeds already in `trials.jsonl` are skipped, so rerunning the same command after an interruption continues where it stopped. A seed is written only once all its tasks are done.
+
+**Split train/validation/test by seed, never by task.** A seed's tasks share one scene and image, so splitting them would let the model see test scenes during training. For 2,000 seeds, for example: 0–1699 train, 1700–1849 validation, 1850–1999 test.
 
 ## Viewing the camera in Gazebo
 

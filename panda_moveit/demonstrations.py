@@ -11,7 +11,8 @@ For each scenario:
   4. execute the task with the cheaper arm, then capture the "after" frame,
      joint states and where every cube ended up;
   5. write everything to data/scenario_<n>_seed<seed>/record.json (plus the
-     images) and a summary line to data/demonstrations.jsonl.
+     images; depth as compressed .npz, key 'depth') and a summary line to
+     data/demonstrations.jsonl.
 
     demonstrations.py                 # 10 scenarios, random seeds
     demonstrations.py --count 3 --seed-start 100
@@ -26,19 +27,18 @@ from pathlib import Path
 from threading import Thread
 
 import cv2
-import numpy as np
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import JointState
 
 # gz.msgs types come from pick_place, which imports them in a safe order.
-from pick_place import ARMS, TCP_OFFSET, gz_model_poses, run, summarize
-from collect import LIFT_HEIGHT, PREGRASP_HEIGHT, camera_pose, capture
+from pick_place import (ARMS, COST_DEFINITION, PLANNER_SETTINGS, TCP_OFFSET, gz_model_poses,
+                        run, summarize)
+from collect import (LIFT_HEIGHT, PREGRASP_HEIGHT, camera_pose, capture, plan_arm,
+                     save_depth)
 from scenario import CUBE_Z, ScenarioApplier, generate
 
 DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
-# Task cost C = T_total + LAMBDA * L_total (seconds + seconds per radian).
-LAMBDA = 1.0
 TASK_ATTEMPTS = 6  # tasks tried per scenario before giving up on it
 
 
@@ -58,41 +58,11 @@ class JointStates:
         return dict(zip(self.msg.name, self.msg.position))
 
 
-def cost(result):
-    return result['total_trajectory_duration'] + LAMBDA * result['total_joint_path_length']
-
-
-def plan_arm(node, cube, place_xyz, repeats):
-    """Plan-only attempts for one arm; the best feasible one sets its cost."""
-    plans = []
-    for _ in range(repeats):
-        start = time.monotonic()
-        stages = run(node, cube['name'], cube['xyz'], place_xyz, PREGRASP_HEIGHT,
-                     LIFT_HEIGHT, False, cube['yaw'], quiet=True, keep_trajectories=True)
-        result = summarize(stages, False)
-        result['wall_time'] = time.monotonic() - start
-        result['cost'] = cost(result) if result['success'] else None
-        result['stages'] = stages
-        plans.append(result)
-        if result['failed_stage'] == 'grasp_select':
-            break  # no grasp yaw is reachable; replanning will not change that
-    feasible = [p for p in plans if p['success']]
-    best = min(feasible, key=lambda p: p['cost'], default=None)
-    return dict(feasible=bool(feasible), plans=plans,
-                best_plan_index=None if best is None else plans.index(best),
-                best_cost=best and best['cost'],
-                best_trajectory_duration=best and best['total_trajectory_duration'],
-                best_joint_path_length=best and best['total_joint_path_length'],
-                # What a planner-based assignment pays: one plan per arm.
-                single_plan_wall_time=plans[0]['wall_time'],
-                total_planning_wall_time=sum(p['wall_time'] for p in plans))
-
-
 def save_frame(folder, name):
     rgb, depth, _ = capture()
     cv2.imwrite(str(folder / f'{name}_rgb.png'), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-    np.save(folder / f'{name}_depth.npy', depth)
-    return dict(rgb=f'{name}_rgb.png', depth=f'{name}_depth.npy')
+    save_depth(folder / f'{name}_depth.npz', depth)
+    return dict(rgb=f'{name}_rgb.png', depth=f'{name}_depth.npz')
 
 
 def pose_dict(poses, name):
@@ -103,7 +73,8 @@ def pose_dict(poses, name):
 def run_scenario(index, seed, applier, joints, args, folder):
     record = dict(scenario_index=index, seed=seed, started=datetime.now().isoformat(),
                   speed=args.speed, accel=args.accel, tcp_offset=TCP_OFFSET,
-                  repeats=args.repeats, cost_definition=f'T_total + {LAMBDA} * L_total')
+                  repeats=args.repeats, cost_definition=COST_DEFINITION,
+                  planner=PLANNER_SETTINGS)
 
     scenario = applier.apply(generate(seed))
     record['scenario'] = scenario
@@ -147,7 +118,6 @@ def run_scenario(index, seed, applier, joints, args, folder):
                  PREGRASP_HEIGHT, LIFT_HEIGHT, True, cube['yaw'], quiet=True,
                  keep_trajectories=True)
     executed = summarize(stages, True)
-    executed['cost'] = cost(executed) if executed['success'] else None
     after = gz_model_poses()
     final = after[cube['name']][0]
     executed.update(

@@ -98,6 +98,22 @@ ARMS = {
                   'cube_green', 'dropoff_b'),
 }
 
+# Every planning request uses these; trials store them so the MoveIt
+# baseline (its decision time and costs) is reported with its settings.
+# OMPL planner and pipeline are set in the launch file.
+PLANNER_SETTINGS = dict(
+    pipeline='ompl',
+    planner='RRTConnect',
+    allowed_planning_time=8.0,
+    num_planning_attempts=10,
+    goal_position_tolerance=0.005,       # m, radius of the link8 goal sphere
+    goal_orientation_tolerance=0.05,     # rad, per axis
+    cartesian_max_step=0.005,            # m
+    cartesian_min_fraction=0.99,
+    ik_precheck_timeout=0.5,             # s, /compute_ik before OMPL
+    ik_solver='KDL',
+)
+
 CUBE_SIZE = 0.04
 GRIPPER_OPEN = 0.04
 GRIPPER_CLOSE = 0.015  # below half the cube width, so the fingers squeeze
@@ -388,7 +404,7 @@ class PickPlace(Node):
 
         sphere = SolidPrimitive()
         sphere.type = SolidPrimitive.SPHERE
-        sphere.dimensions = [0.005]
+        sphere.dimensions = [PLANNER_SETTINGS['goal_position_tolerance']]
         volume = BoundingVolume()
         volume.primitives.append(sphere)
         volume.primitive_poses.append(target.pose)
@@ -403,9 +419,10 @@ class PickPlace(Node):
         oc.header = target.header
         oc.link_name = self.arm.link8
         oc.orientation = target.pose.orientation
-        oc.absolute_x_axis_tolerance = 0.05
-        oc.absolute_y_axis_tolerance = 0.05
-        oc.absolute_z_axis_tolerance = 0.05  # yaw sets finger closing direction
+        tolerance = PLANNER_SETTINGS['goal_orientation_tolerance']
+        oc.absolute_x_axis_tolerance = tolerance
+        oc.absolute_y_axis_tolerance = tolerance
+        oc.absolute_z_axis_tolerance = tolerance  # yaw sets finger closing direction
         oc.weight = 1.0
 
         constraint = Constraints()
@@ -414,8 +431,8 @@ class PickPlace(Node):
 
         req = MotionPlanRequest()
         req.group_name = self.arm.group
-        req.num_planning_attempts = 10
-        req.allowed_planning_time = 8.0
+        req.num_planning_attempts = PLANNER_SETTINGS['num_planning_attempts']
+        req.allowed_planning_time = PLANNER_SETTINGS['allowed_planning_time']
         req.max_velocity_scaling_factor = self.speed
         req.max_acceleration_scaling_factor = self.accel
         req.goal_constraints = [constraint]
@@ -442,7 +459,8 @@ class PickPlace(Node):
                         result.planning_time),
                 result.planned_trajectory)
 
-    def reachable(self, pose, finger=GRIPPER_OPEN, timeout=0.5):
+    def reachable(self, pose, finger=GRIPPER_OPEN,
+                  timeout=PLANNER_SETTINGS['ik_precheck_timeout']):
         """Collision-free IK exists for link8 at pose, with the gripper at finger.
 
         Milliseconds, versus OMPL spending its whole planning time when the
@@ -477,8 +495,8 @@ class PickPlace(Node):
 
         req = MotionPlanRequest()
         req.group_name = self.arm.group
-        req.num_planning_attempts = 10
-        req.allowed_planning_time = 8.0
+        req.num_planning_attempts = PLANNER_SETTINGS['num_planning_attempts']
+        req.allowed_planning_time = PLANNER_SETTINGS['allowed_planning_time']
         req.max_velocity_scaling_factor = self.speed
         req.max_acceleration_scaling_factor = self.accel
         req.goal_constraints = [constraint]
@@ -498,14 +516,15 @@ class PickPlace(Node):
         return metrics(result.error_code.val, result.planned_trajectory,
                        result.planning_time)
 
-    def cartesian_to(self, pose, start_state=None, execute=False, min_fraction=0.99):
+    def cartesian_to(self, pose, start_state=None, execute=False,
+                     min_fraction=PLANNER_SETTINGS['cartesian_min_fraction']):
         """Straight-line link8 motion to pose, collision checked."""
         req = GetCartesianPath.Request()
         req.header.frame_id = 'world'
         req.group_name = self.arm.group
         req.link_name = self.arm.link8
         req.waypoints = [pose]
-        req.max_step = 0.005
+        req.max_step = PLANNER_SETTINGS['cartesian_max_step']
         req.jump_threshold = 0.0
         req.avoid_collisions = True
         req.max_velocity_scaling_factor = self.speed
@@ -783,16 +802,24 @@ def run(node, cube, cube_xyz, place_xyz, pregrasp_height, lift_height, execute,
     return stages
 
 
+# Task cost C = T_total + LAMBDA * L_total (seconds + seconds per radian).
+LAMBDA = 1.0
+COST_DEFINITION = f'T_total + {LAMBDA} * L_total'
+
+
 def summarize(stages, execute):
-    """Outcome and cost totals of one run() result."""
+    """Outcome and cost totals of one run() result; cost is None if it failed."""
     last = 'verify_place' if execute else 'retreat'
     success = bool(stages) and all(s['success'] for s in stages) and stages[-1]['stage'] == last
     motion = [s for s in stages if 'trajectory_duration' in s]
+    duration = sum(s['trajectory_duration'] for s in motion)
+    path_length = sum(s['joint_path_length'] for s in motion)
     return dict(success=success,
                 failed_stage=None if success else stages[-1]['stage'],
-                total_trajectory_duration=sum(s['trajectory_duration'] for s in motion),
-                total_joint_path_length=sum(s['joint_path_length'] for s in motion),
-                total_planning_time=sum(s.get('planning_time', 0.0) for s in stages))
+                total_trajectory_duration=duration,
+                total_joint_path_length=path_length,
+                total_planning_time=sum(s.get('planning_time', 0.0) for s in stages),
+                cost=duration + LAMBDA * path_length if success else None)
 
 
 def main():

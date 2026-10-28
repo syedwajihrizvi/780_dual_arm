@@ -22,13 +22,13 @@ C = T_total + λ · L_total        (λ = 1.0 s/rad)
 
 Course context: Waterloo ECE 780, Robot Learning.
 
-## 2. Status (2026-10-27)
+## 2. Status (2026-10-28)
 
 **Working and tested:**
 - Both arms pick and place reliably. Cubes land within about 0.5–6 mm of the target, and other cubes are left undisturbed.
 - **Scenario randomizer:** trays, 3–6 obstacles, 12 cubes and the arm start poses. Re-applying a saved scenario restores an identical scene, including the arm joints.
 - **`demonstrations.py`:** plans both arms, executes the cheaper one, and logs everything with before/after RGB-D. A 10-scenario dry run completed 10 of 10.
-- **`collect.py`:** plan-only paired trials for large datasets.
+- **`collect.py`:** plan-only paired trials for large datasets, with every plan's joint trajectories (the training data for the generative policy).
 
 **Not done yet:**
 - A large dataset.
@@ -132,7 +132,11 @@ It takes about 6–8 s.
 ## 6. Data
 
 - **`demonstrations.py`:** one task per scenario. It plans both arms (best of 3), executes the cheaper one, and captures before/after RGB-D. The full field list is in the README.
-- **`collect.py`:** plan-only, several tasks per scenario, one line per paired trial in `trials.jsonl`. It can resume by seed.
+- **`collect.py`:** plan-only, several tasks per scenario. `trials.jsonl` has one summary line per paired trial (task poses, both arms' feasibility and best cost); `trials/seed_<seed>_task_<i>.json` has every plan with stage-by-stage joint trajectories. It can resume by seed.
+- **Best plan:** each arm's `best_plan_index` points to its cheapest feasible plan by full cost `C`, in both scripts. That plan is the arm's cost label.
+- **Settings:** every trial stores `planner` (the MoveIt/OMPL settings from `PLANNER_SETTINGS` in `pick_place.py`), `cost_definition`, `speed` and `accel`.
+- **Depth** is saved as compressed `.npz` (`np.load(f)['depth']`, float32 metres): lossless and about 11× smaller than `.npy`.
+- **Splits:** train/validation/test must be split by seed, since a seed's tasks share one scene.
 
 **Camera:**
 - Fixed, looking straight down from (0.85, 0, 2.6); 960×720; 90° horizontal field of view; fx = fy = 480, cx = 480, cy = 360; no distortion.
@@ -147,14 +151,14 @@ It takes about 6–8 s.
 
 ## 7. Observations and open questions
 
-- **Panda 2 got 8 of 10 tasks** in the dry run, and Panda 1 couldn't do 5 of them. That's too few to say whether it's chance or a bias in the setup (reach, tray placement). Check the assignment balance on a larger batch.
-- **Most of the disk space is depth images:** about 5.7 MB per scenario, as uncompressed `.npy`. Before a large run, consider `np.savez_compressed` or 16-bit PNG in millimetres.
+- **Assignment balance (bias check, 40 seeds, 160 tasks, plan-only):** overall assignment 73 Panda 1 vs 82 Panda 2, and feasibility 75% vs 69%, so balanced. The 8-of-10 split in the first dry run was chance. When both arms were feasible (76 tasks), Panda 2 was cheaper in 47 (62%, median 0.57 lower). That's borderline significant (p ≈ 0.04) and worth rechecking on the full dataset. The generator itself is symmetric (checked over 2,000 seeds).
+- **Distance barely predicts cost:** the arm nearer the cube and tray was the cheaper one in only 34 of those 76 tasks, mostly because the random start poses matter. A nearest-arm baseline will be weak.
 - **Infeasibility is mostly reach.** Six cubes per scenario are forced into the region both arms can reach, so assignments there depend on obstacles and path cost.
 - **Arms may clip at the image edge:** both arms are fully in frame at `ready`, but there's only about 30 px of margin.
 
 ## 8. Suggested next steps
 
-1. Collect a plan-only dataset with `collect.py`, e.g. 500+ seeds.
+1. Collect a plan-only dataset with `collect.py`: 2,000 seeds (about 8–11 h), split by seed into train, validation and test.
 2. Collect an executed subset with `demonstrations.py` or `collect.py --execute`, and compare planned against executed costs.
 3. **Features for the state MLP:** for each arm, the arm's start joints, the cube's pose relative to that arm's base, the tray's pose, and an obstacle summary (padded list or occupancy grid). Targets: feasibility (classification) and cost (regression).
 4. **Baselines:** nearest arm (distance from base to cube plus cube to tray), random, and planner cost with its measured decision time.
