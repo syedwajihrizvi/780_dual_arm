@@ -259,6 +259,23 @@ Train (one checkpoint per `--save_freq` steps under `--output_dir`):
 
 `drop_n_last_frames=0` matters: the default (7) never starts a training chunk in an episode's last 7 frames, which hides most of the lower and retreat stages in these ~24-frame episodes. Lower `--batch_size` on smaller GPUs (16 fits in 8 GB).
 
+## Evaluating a trained policy
+
+`evaluate_policy.py` samples K trajectories per arm for each trial in a seed range, scores them, and compares the resulting arm choice with MoveIt's:
+
+```bash
+~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/evaluate_policy.py \
+    --checkpoint outputs/diffusion_dual_panda/checkpoints/last/pretrained_model \
+    --seeds 1700 1850 --samples 16 --out ~/eval_val.jsonl
+```
+
+- **A sample is valid** if the gripper closes within 3 cm of the cube, opens within 3 cm of the place target, and the approximate collision check (`collision_check.py`) finds no contact. Its cost is `T + 1.0 * L`, computed like MoveIt's.
+- **Assignment:** the arm with the cheapest valid sample, compared with MoveIt's cheapest arm. The summary prints agreement, regret (extra MoveIt cost of the chosen arm), wrong-feasibility counts, sample validity, grasp/place error and decision time.
+- **Checked against MoveIt's own plans** as perfect samples: 98.9% valid (the rest are the collision check's 1.1% false positives), median grasp error 4 mm, cost within ~0.04.
+- **Speed:** both arms' samples are denoised in one batch, each arm's image is encoded once, and sampling runs in bf16 (`--no-bf16` to disable). On an RTX 4060, one chunk for 2 arms × 16 samples takes ~205 ms with the default U-Net and ~70 ms with `--policy.down_dims='[256,512,1024]'`.
+
+Other tools: `plot_trajectories.py` draws TCP paths over the scene image, `data_stats.py` summarizes a dataset, `panda_kinematics.py` is numpy forward kinematics.
+
 ## Viewing the camera in Gazebo
 
 1. In the Gazebo window, click the **⋮** menu in the top-right corner.
@@ -283,6 +300,9 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 | `panda_moveit/demonstrations.py` | Unattended plan-both-execute-best demonstrations. |
 | `panda_moveit/collect.py` | Plan-only paired-trial collector; also the camera capture code. |
 | `panda_moveit/convert_lerobot.py` | Converts collected plans to LeRobot datasets (run with the LeRobot venv). |
+| `panda_moveit/evaluate_policy.py` | Samples a trained policy on held-out seeds and compares with MoveIt. |
+| `panda_moveit/collision_check.py`, `panda_kinematics.py` | Fast approximate collision check and forward kinematics for generated trajectories. |
+| `panda_moveit/plot_trajectories.py`, `data_stats.py` | Trajectory plots over the scene image; dataset statistics. |
 | `panda_moveit/dual_joint_states.py` | Merges both arms' joint states into `/dual_joint_states` with prefixed names. |
 | `panda_moveit/dual_trajectory_adapter.py` | Forwards MoveIt trajectories to each arm's Gazebo controller. |
 | `panda_moveit/planning_scene_setup.py` | Loads the table, cubes, trays and obstacles from the world into MoveIt at startup. |

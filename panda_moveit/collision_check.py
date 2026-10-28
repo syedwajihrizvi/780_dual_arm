@@ -31,6 +31,7 @@ HAND_RADIUS = 0.03
 HAND_POINTS = [(0.0, y, z) for y in (-0.05, 0.0, 0.05) for z in (0.0, 0.035)]
 TABLE_EXEMPT_JOINTS = 2   # base and shoulder sit on the table by design
 TRAY_WALL = (0.01, 0.03)   # thickness, height; outer size from the scenario
+EXACT_BELOW = 0.15         # m; other-arm gaps are exact below this, a lower bound above
 
 
 def arm_spheres(q, arm):
@@ -97,7 +98,14 @@ def check(q, arm, scenario, other_q=None):
     """Clearance of a trajectory q (n, 7): smallest gap between the arm's
     spheres and anything in the scene (negative = collision), with the
     frame and object where it happens."""
-    centres, radii, table_ok = arm_spheres(np.asarray(q, float), arm)
+    return check_many([q], arm, scenario, other_q)[0]
+
+
+def check_many(trajectories, arm, scenario, other_q=None):
+    """check() for several trajectories of one arm in one vectorized pass."""
+    lengths = [len(q) for q in trajectories]
+    q = np.concatenate([np.asarray(t, float).reshape(-1, 7) for t in trajectories])
+    centres, radii, table_ok = arm_spheres(q, arm)
     results = []
     for name, centre, yaw, half in scene_boxes(scenario):
         gap = box_distance(centres, centre, yaw, half) - radii
@@ -107,13 +115,33 @@ def check(q, arm, scenario, other_q=None):
     other = 'second' if arm == 'first' else 'first'
     oq = np.asarray(other_q if other_q is not None else scenario['arm_starts'][other], float)
     oc, orad, _ = arm_spheres(oq[None], other)
-    dist = np.linalg.norm(centres[:, :, None] - oc[:, None], axis=-1)      # (n, s, so)
-    results.append(((dist - radii[None, :, None] - orad[None, None]).min(-1), f'{other}_arm'))
+    oc, orad = oc[0], orad
+    # The other arm is static. Distance to the bounding box of its sphere
+    # centres, minus both radii, is a lower bound on the gap; only spheres
+    # where that bound is small get exact pairwise distances (gaps above
+    # EXACT_BELOW are reported as the bound).
+    lo, hi = oc.min(0), oc.max(0)
+    outside = np.maximum(np.maximum(lo - centres, centres - hi), 0.0)
+    gap = np.linalg.norm(outside, axis=-1) - radii - orad.max()
+    near = np.flatnonzero((gap < EXACT_BELOW).reshape(-1))
+    if len(near):
+        flat = centres.reshape(-1, 3)[near]
+        r = np.broadcast_to(radii, centres.shape[:2]).reshape(-1)[near]
+        d = np.linalg.norm(flat[:, None] - oc[None], axis=-1) - r[:, None] - orad[None]
+        gap.reshape(-1)[near] = d.min(axis=1)
+    results.append((gap, f'{other}_arm'))
 
-    best = min(((g.min(), name, np.unravel_index(g.argmin(), g.shape)[0]) for g, name in results),
-               key=lambda x: x[0])
-    clearance, obj, frame = best
-    return dict(clearance=float(clearance), collision=bool(clearance < 0), object=obj, frame=int(frame))
+    per_object = np.stack([g.min(axis=1) for g, _ in results])            # (objects, frames)
+    names = [name for _, name in results]
+    out, start = [], 0
+    for n in lengths:
+        block = per_object[:, start:start + n]
+        obj, frame = np.unravel_index(block.argmin(), block.shape)
+        clearance = block[obj, frame]
+        out.append(dict(clearance=float(clearance), collision=bool(clearance < 0),
+                        object=names[obj], frame=int(frame)))
+        start += n
+    return out
 
 
 def plan_joints(plan):
