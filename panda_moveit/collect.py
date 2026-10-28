@@ -51,18 +51,32 @@ CAMERA_MODEL = 'overhead_rgbd'
 LINK_TO_OPTICAL = (-0.5, 0.5, -0.5, 0.5)  # xyzw
 PREGRASP_HEIGHT = 0.15
 LIFT_HEIGHT = 0.10
+SEED_ATTEMPTS = 2  # tries per seed before skipping it
+MAX_FAILURES = 5  # consecutive skipped seeds before giving up
 
 
-def capture(timeout=5.0):
-    """One RGB frame, one depth frame and camera info, all received fresh."""
+def capture(timeout=5.0, need_info=True, attempts=3):
+    """One fresh RGB frame and depth frame, plus camera info if need_info
+    (it is static, so callers that already saved it can skip it; otherwise
+    None). Retries: a frame occasionally goes missing over a long run."""
+    for attempt in range(attempts):
+        try:
+            return _capture_once(timeout, need_info)
+        except TimeoutError:
+            if attempt == attempts - 1:
+                raise
+
+
+def _capture_once(timeout, need_info):
     got = {}
     done = Event()
     skip = {'rgb': 1, 'depth': 1}  # drop a frame possibly rendered mid-apply
+    needed = {'rgb', 'depth'} | ({'info'} if need_info else set())
 
     def keep(key, value):
         if key not in got:
             got[key] = value
-            if len(got) == 3:
+            if needed <= got.keys():
                 done.set()
 
     def on_rgb(msg):
@@ -91,7 +105,7 @@ def capture(timeout=5.0):
     finally:
         for topic in ('image', 'depth_image', 'camera_info'):
             node.unsubscribe(f'{CAMERA_TOPIC}/{topic}')
-    return got['rgb'], got['depth'], got['info']
+    return got['rgb'], got['depth'], got.get('info')
 
 
 def save_depth(path, depth):
@@ -173,6 +187,40 @@ ARM_SUMMARY = ('feasible', 'best_plan_index', 'best_cost', 'best_trajectory_dura
                'best_joint_path_length', 'single_plan_wall_time', 'total_planning_wall_time')
 
 
+def collect_seed(seed, applier, args, out):
+    """Apply one scenario, capture it and evaluate its tasks with both arms."""
+    scenario = applier.apply(generate(seed))
+    need_info = not (out / 'camera.json').exists()
+    rgb, depth, info = capture(need_info=need_info)
+    if need_info:
+        (out / 'camera.json').write_text(json.dumps(dict(**info, **camera_pose()), indent=2))
+    (out / 'scenarios' / f'scenario_{seed}.json').write_text(json.dumps(scenario, indent=2))
+    cv2.imwrite(str(out / 'images' / f'scene_{seed}_rgb.png'), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    save_depth(out / 'images' / f'scene_{seed}_depth.npz', depth)
+
+    lines = []
+    for i, task in enumerate(choose_tasks(scenario, args.tasks)):
+        arms = {name: evaluate(applier.arms[name], scenario, task, args.repeats,
+                               args.execute, applier)
+                for name in ARMS}
+        trial_file = f'trials/seed_{seed}_task_{i}.json'
+        info = dict(seed=seed, task_index=i, **task, **task_poses(scenario, task),
+                    speed=args.speed, accel=args.accel, tcp_offset=TCP_OFFSET,
+                    cost_definition=COST_DEFINITION, repeats=args.repeats,
+                    planner=PLANNER_SETTINGS,
+                    rgb=f'images/scene_{seed}_rgb.png',
+                    depth=f'images/scene_{seed}_depth.npz',
+                    scenario=f'scenarios/scenario_{seed}.json')
+        # Full plans (with trajectories) per trial; the summary line stays small.
+        (out / trial_file).write_text(json.dumps(dict(**info, arms=arms)) + '\n')
+        lines.append(dict(**info, trial=trial_file,
+                          arms={n: {k: a[k] for k in ARM_SUMMARY} for n, a in arms.items()}))
+        costs = {n: ('%.2f' % a['best_cost']) if a['feasible'] else 'infeasible'
+                 for n, a in arms.items()}
+        print(f"seed {seed} task {i}: {task['cube']} -> {task['tray']}: {costs}")
+    return lines
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--seeds', type=int, nargs=2, metavar=('FIRST', 'COUNT'), required=True)
@@ -200,40 +248,26 @@ def main():
         executor.add_node(node)
     spin = Thread(target=executor.spin, daemon=True)
     spin.start()
+    failures = 0  # consecutive skipped seeds
     try:
         for seed in range(args.seeds[0], args.seeds[0] + args.seeds[1]):
             if seed in done:
                 print(f'seed {seed}: already collected, skipping')
                 continue
             start = time.monotonic()
-            scenario = applier.apply(generate(seed))
-            rgb, depth, info = capture()
-            if not (out / 'camera.json').exists():
-                (out / 'camera.json').write_text(json.dumps(dict(**info, **camera_pose()), indent=2))
-            (out / 'scenarios' / f'scenario_{seed}.json').write_text(json.dumps(scenario, indent=2))
-            cv2.imwrite(str(out / 'images' / f'scene_{seed}_rgb.png'), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            save_depth(out / 'images' / f'scene_{seed}_depth.npz', depth)
-
-            lines = []
-            for i, task in enumerate(choose_tasks(scenario, args.tasks)):
-                arms = {name: evaluate(applier.arms[name], scenario, task, args.repeats,
-                                       args.execute, applier)
-                        for name in ARMS}
-                trial_file = f'trials/seed_{seed}_task_{i}.json'
-                info = dict(seed=seed, task_index=i, **task, **task_poses(scenario, task),
-                            speed=args.speed, accel=args.accel, tcp_offset=TCP_OFFSET,
-                            cost_definition=COST_DEFINITION, repeats=args.repeats,
-                            planner=PLANNER_SETTINGS,
-                            rgb=f'images/scene_{seed}_rgb.png',
-                            depth=f'images/scene_{seed}_depth.npz',
-                            scenario=f'scenarios/scenario_{seed}.json')
-                # Full plans (with trajectories) per trial; the summary line stays small.
-                (out / trial_file).write_text(json.dumps(dict(**info, arms=arms)) + '\n')
-                lines.append(dict(**info, trial=trial_file,
-                                  arms={n: {k: a[k] for k in ARM_SUMMARY} for n, a in arms.items()}))
-                costs = {n: ('%.2f' % a['best_cost']) if a['feasible'] else 'infeasible'
-                         for n, a in arms.items()}
-                print(f"seed {seed} task {i}: {task['cube']} -> {task['tray']}: {costs}")
+            for attempt in range(SEED_ATTEMPTS):
+                try:
+                    lines = collect_seed(seed, applier, args, out)
+                    break
+                except Exception as e:  # unattended: a rerun retries skipped seeds
+                    print(f'seed {seed}: attempt {attempt + 1} failed, {type(e).__name__}: {e}')
+            else:
+                print(f'seed {seed}: skipped')
+                failures += 1
+                if failures >= MAX_FAILURES:
+                    raise RuntimeError(f'{failures} seeds in a row failed; check the sim')
+                continue
+            failures = 0
             # Whole scenarios only, so a resumed run never sees half a seed.
             with trials_path.open('a') as f:
                 for line in lines:

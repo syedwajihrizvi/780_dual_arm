@@ -348,6 +348,16 @@ class ScenarioApplier:
         for arm, joints in starts.items():
             record = self.arms[arm].move_to_joints(joints)
             if not record['success']:
+                # A stuck or out-of-limits arm makes every later plan fail;
+                # drive it to READY directly, then plan again.
+                print(f'{arm} arm: move failed (MoveIt code {record["error_code"]}), recovering')
+                if not self.arms[arm].drive_to_joints(READY):
+                    # Seen once: Gazebo locks a joint at its hard limit. Only a
+                    # sim restart frees it. SystemExit gets past per-seed retries.
+                    raise SystemExit(f'{arm} arm is stuck in Gazebo (joint at a hard limit); '
+                                     'restart the sim, then rerun to resume')
+                record = self.arms[arm].move_to_joints(joints)
+            if not record['success']:
                 raise RuntimeError(f'{arm} arm could not reach {joints} '
                                    f'(MoveIt code {record["error_code"]})')
 

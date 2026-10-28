@@ -59,7 +59,7 @@ class JointStates:
 
 
 def save_frame(folder, name):
-    rgb, depth, _ = capture()
+    rgb, depth, _ = capture(need_info=False)
     cv2.imwrite(str(folder / f'{name}_rgb.png'), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     save_depth(folder / f'{name}_depth.npz', depth)
     return dict(rgb=f'{name}_rgb.png', depth=f'{name}_depth.npz')

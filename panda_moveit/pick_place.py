@@ -27,7 +27,10 @@ from rclpy.node import Node
 from geometry_msgs.msg import Pose, PoseStamped
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
+from builtin_interfaces.msg import Duration
+from control_msgs.action import FollowJointTrajectory
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
+from trajectory_msgs.msg import JointTrajectoryPoint
 from moveit_msgs.msg import (AttachedCollisionObject, BoundingVolume,
                              CollisionObject, Constraints, JointConstraint,
                              MoveItErrorCodes,
@@ -381,6 +384,8 @@ class PickPlace(Node):
         self.accel = accel
         self.move_client = ActionClient(self, MoveGroup, '/move_action')
         self.exec_client = ActionClient(self, ExecuteTrajectory, '/execute_trajectory')
+        self.controller = ActionClient(
+            self, FollowJointTrajectory, f'{arm.ns}/panda_arm_controller/follow_joint_trajectory')
         self.cartesian = self.create_client(GetCartesianPath, '/compute_cartesian_path')
         self.scene = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
         self.ik = self.create_client(GetPositionIK, '/compute_ik')
@@ -481,6 +486,22 @@ class PickPlace(Node):
             raise RuntimeError('/compute_ik unavailable')
         res = wait_done(self.ik.call_async(req), timeout + 10)
         return res.error_code.val == MoveItErrorCodes.SUCCESS
+
+    def drive_to_joints(self, positions, duration=5.0):
+        """Straight joint-space move sent to the controller, bypassing MoveIt.
+        Recovery only: no collision checking, but it works from a state MoveIt
+        rejects (e.g. Gazebo pushed a joint past its limit)."""
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = [f'panda_joint{i}' for i in range(1, 8)]
+        point = JointTrajectoryPoint(positions=[float(v) for v in positions])
+        point.time_from_start = Duration(sec=int(duration), nanosec=int(duration % 1 * 1e9))
+        goal.trajectory.points = [point]
+        if not self.controller.wait_for_server(timeout_sec=15.0):
+            raise RuntimeError(f'{self.arm.name} arm controller unavailable')
+        handle = wait_done(self.controller.send_goal_async(goal), 20)
+        if not handle.accepted:
+            raise RuntimeError('controller rejected the recovery goal')
+        return wait_done(handle.get_result_async(), duration + 20).result.error_code == 0
 
     def move_to_joints(self, positions, execute=True):
         """OMPL plan to a 7-joint arm configuration."""

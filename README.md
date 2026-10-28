@@ -44,10 +44,14 @@ Use `--symlink-install`. It lets edits to configs, worlds and scripts take effec
 ## Launch the simulation
 
 ```bash
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+export GZ_IP=127.0.0.1
 cd ~/ros2_ws
 source install/setup.bash
 ros2 launch panda_moveit panda_moveit.launch.py
 ```
+
+The two `export` lines keep ROS 2 and Gazebo traffic on this machine. Without them, discovery goes over the network, and a Wi-Fi drop during a long run makes MoveIt and controller requests time out. Set them in **every** terminal (the launch and each script), or the scripts won't find the simulation. Adding them to `~/.bashrc` is easiest; remove them if you later need ROS to talk to another computer.
 
 This one command starts:
 - Gazebo with the table world
@@ -119,7 +123,7 @@ The same seed always gives the same scenario.
    Randomizing pieces
    Running Scenario 1...
    Completed Scenario 1...
-       cube_cyan -> dropoff_a, 6 obstacles |  first 9.90, second 8.87 | second arm completed it
+       cube_cyan -> dropoff_a, 6 obstacles | cost first 9.90, second 8.87 | second arm completed it
    Write data for scenario 1 to file for demonstration
    Randomizing pieces
    Running Scenario 2...
@@ -132,7 +136,7 @@ The same seed always gives the same scenario.
 |---|---|---|
 | `--count N` | 10 | Number of scenarios. |
 | `--seed-start S` | random | Seeds are S, S+1, …, so the same command reproduces the same scenes. |
-| `--repeats R` | 3 | Plans per arm per task. OMPL is random, so the  label is the best of R. |
+| `--repeats R` | 3 | Plans per arm per task. OMPL is random, so the cost label is the best of R. |
 | `--out DIR` | `panda_moveit/data` | Output folder. |
 | `--speed`, `--accel` | 0.5 | Keep these fixed within one dataset, since trajectory times depend on them. |
 
@@ -165,7 +169,7 @@ data/
 | `rejected_tasks` | Tasks skipped because neither arm could do them. |
 | `planner`, `cost_definition`, `speed`, `accel` | MoveIt settings used for every plan (planner, time limit, attempts, tolerances), the cost formula, and the speed scaling. |
 
-Cost is `C = T_total + 1.0 * L_total`, where `T_total` is total trajectory time in seconds and `L_total` is total joint path length in radians, both summed over all motion stages. The separate terms are stored too, so a different weighting can be used later.Could also compute more complicated Cost equations such as Hungarian Cost
+Cost is `C = T_total + 1.0 * L_total`, where `T_total` is total trajectory time in seconds and `L_total` is total joint path length in radians, both summed over all motion stages. The separate terms are stored too, so a different weighting can be used later. More elaborate assignment schemes, such as Hungarian assignment of several tasks across both arms, can be built on the same per-arm costs.
 
 ### Large plan-only datasets (training data)
 
@@ -185,9 +189,36 @@ panda_data/
 └── images/scene_<seed>_rgb.png, scene_<seed>_depth.npz   # before any task; shared by the seed's tasks
 ```
 
+2,000 seeds take about 9 hours and about 1.1 GB. To leave it running unattended and log to a file:
+
+```bash
+setsid nohup python3 -u src/panda_moveit/panda_moveit/collect.py --seeds 0 2000 --out ~/panda_data \
+    > ~/panda_data_collect.log 2>&1 < /dev/null &
+tail -f ~/panda_data_collect.log          # watch progress
+wc -l < ~/panda_data/trials.jsonl         # trials saved so far (4 per seed)
+pkill -f collect.py                       # stop
+```
+
 It can resume: seeds already in `trials.jsonl` are skipped, so rerunning the same command after an interruption continues where it stopped. A seed is written only once all its tasks are done.
 
-**Split train/validation/test by seed, never by task.** A seed's tasks share one scene and image, so splitting them would let the model see test scenes during training. For 2,000 seeds, for example: 0–1699 train, 1700–1849 validation, 1850–1999 test.
+Failures during a long run:
+- A camera frame that doesn't arrive is retried up to 3 times.
+- A seed that fails is retried once, then skipped. A rerun of the same command tries skipped seeds again.
+- The run stops by itself if 5 seeds in a row fail, or if an arm gets stuck in Gazebo (see [Troubleshooting](#troubleshooting)). Restart the launch, then rerun the same command.
+
+**Seeds and reproducibility.** A seed fixes the scene, the arm start poses and the 4 tasks, on any machine. It does not fix the plans: OMPL is random, so trajectories and costs differ between runs, and planning times depend on the CPU.
+
+**Collecting on several PCs.** Give each PC its own seed range so every scene is new, then merge the output folders (file names include the seed, so nothing collides):
+
+| PC | Command |
+|---|---|
+| 1 | `collect.py --seeds 0 2000 --out ~/panda_data` (seeds 0–1999) |
+| 2 | `collect.py --seeds 2000 2000 --out ~/panda_data` (seeds 2000–3999) |
+| 3 | `collect.py --seeds 4000 2000 --out ~/panda_data` (seeds 4000–5999) |
+
+Use `--seeds 2000 1000` etc. for 1,000 seeds; keep the starting points so the ranges never overlap. Running the same range on two PCs gives the same scenes with different plans, not new scenes. Keep `--repeats`, `--speed` and `--accel` the same everywhere. Compare planning times only within one machine.
+
+**Split train/validation/test by seed, never by task.** A seed's tasks share one scene and image, so splitting them would let the model see test scenes during training. Our split: seeds 1700–1849 validation and 1850–1999 test, every other seed (0–1699 and all seeds from other PCs) for training.
 
 ## Viewing the camera in Gazebo
 
@@ -220,7 +251,9 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 
 ## Troubleshooting
 
-- **`MoveIt request timed out` / `/move_action unavailable`:** the launch isn't fully up yet. Wait for the `ready` pose and RViz's planning scene.
+- **`MoveIt request timed out` / `/move_action unavailable`:** the launch isn't fully up yet. Wait for the `ready` pose and RViz's planning scene. If it happens mid-run, check that the launch and the script use the same `export` lines from [Launch the simulation](#launch-the-simulation).
+- **`Exception sending a multicast message: Network is unreachable` in the log:** the network dropped and discovery went with it. Restart with the localhost `export` lines.
+- **`arm is stuck in Gazebo (joint at a hard limit)`:** Gazebo occasionally locks a joint at its limit, and nothing short of a restart frees it. Restart the launch and rerun the collector; it resumes.
 - **A stage fails with a goal tolerance error:** the arm couldn't follow the trajectory at the requested speed. Try `--speed 0.3`.
 - **`stopped while holding the cube`:** a run stopped mid-task. Applying any scenario releases every cube and resets the table. `pick_place.py --cube <name> --reset` releases just that cube.
 - **Changes to the world or controller configs have no effect:** Gazebo and the controllers only read them at launch. Restart the launch.
