@@ -220,6 +220,45 @@ Use `--seeds 2000 1000` etc. for 1,000 seeds; keep the starting points so the ra
 
 **Split train/validation/test by seed, never by task.** A seed's tasks share one scene and image, so splitting them would let the model see test scenes during training. Our split: seeds 1700–1849 validation and 1850–1999 test, every other seed (0–1699 and all seeds from other PCs) for training.
 
+## Converting to a LeRobot dataset
+
+`convert_lerobot.py` turns `collect.py` output into LeRobot datasets for Diffusion Policy. It runs in its own Python environment, not the ROS one:
+
+```bash
+python3 -m venv ~/lerobot_venv
+~/lerobot_venv/bin/pip install "lerobot[dataset,training,diffusion]==0.6.1"
+
+~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/convert_lerobot.py --data ~/panda_data --out ~/lerobot_data
+```
+
+Run it after collection has finished: it uses all CPU cores, which would slow MoveIt and inflate the planning times being recorded. It takes about 0.5 s per episode.
+
+- **Episode:** one arm's best feasible plan for one task, resampled to 5 Hz (`--fps`). Infeasible (trial, arm) pairs are listed in `infeasible.jsonl` instead.
+- **One shared model for both arms:** every input is in the acting arm's base frame, the image is rotated 180° for the second arm (the camera is above the midpoint between the bases, so this puts the second arm where the first one is), and the arm ID is the last two numbers of `observation.environment_state`. `--arms first` builds a single-arm dataset instead.
+- **Splits:** `train/`, `val/` (seeds 1700–1849) and `test/` (seeds 1850–1999), each a LeRobot dataset, with `<split>_episodes.jsonl` mapping each episode to its seed, task, arm and MoveIt cost.
+
+| Feature | Shape | Contents |
+|---|---|---|
+| `observation.state` | 8 | 7 joint angles + gripper width (0.04 open, 0.015 closed) |
+| `observation.environment_state` | 71 | target cube, place target, both trays, 6 obstacle slots (nearest first, with a present flag), the other arm's joints, arm ID; names in `conversion.json` |
+| `observation.images.overhead` | 240×320×3 | the before RGB image, repeated on every frame (video) |
+| `observation.images.height` | 240×320×3 | with `--height-map` only: height above the table from depth, 0–0.35 m (images, not video) |
+| `action` | 8 | joint angles + gripper width at the next frame |
+
+Train (one checkpoint per `--save_freq` steps under `--output_dir`):
+
+```bash
+~/lerobot_venv/bin/lerobot-train --policy.type=diffusion \
+    --dataset.repo_id=dual_panda_train --dataset.root=$HOME/lerobot_data/train \
+    --policy.n_obs_steps=1 --policy.horizon=32 --policy.n_action_steps=32 --policy.drop_n_last_frames=0 \
+    --policy.noise_scheduler_type=DDIM --policy.num_inference_steps=10 \
+    --policy.use_separate_rgb_encoder_per_camera=true --policy.push_to_hub=false \
+    --batch_size=64 --steps=100000 --save_freq=10000 --num_workers=8 \
+    --wandb.enable=false --output_dir=outputs/diffusion_dual_panda
+```
+
+`drop_n_last_frames=0` matters: the default (7) never starts a training chunk in an episode's last 7 frames, which hides most of the lower and retreat stages in these ~24-frame episodes. Lower `--batch_size` on smaller GPUs (16 fits in 8 GB).
+
 ## Viewing the camera in Gazebo
 
 1. In the Gazebo window, click the **⋮** menu in the top-right corner.
@@ -243,6 +282,7 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 | `panda_moveit/scenario.py` | Scenario generator and applier. |
 | `panda_moveit/demonstrations.py` | Unattended plan-both-execute-best demonstrations. |
 | `panda_moveit/collect.py` | Plan-only paired-trial collector; also the camera capture code. |
+| `panda_moveit/convert_lerobot.py` | Converts collected plans to LeRobot datasets (run with the LeRobot venv). |
 | `panda_moveit/dual_joint_states.py` | Merges both arms' joint states into `/dual_joint_states` with prefixed names. |
 | `panda_moveit/dual_trajectory_adapter.py` | Forwards MoveIt trajectories to each arm's Gazebo controller. |
 | `panda_moveit/planning_scene_setup.py` | Loads the table, cubes, trays and obstacles from the world into MoveIt at startup. |
