@@ -119,7 +119,7 @@ The same seed always gives the same scenario.
    Randomizing pieces
    Running Scenario 1...
    Completed Scenario 1...
-       cube_cyan -> dropoff_a, 6 obstacles | cost first 9.90, second 8.87 | second arm completed it
+       cube_cyan -> dropoff_a, 6 obstacles |  first 9.90, second 8.87 | second arm completed it
    Write data for scenario 1 to file for demonstration
    Randomizing pieces
    Running Scenario 2...
@@ -132,7 +132,7 @@ The same seed always gives the same scenario.
 |---|---|---|
 | `--count N` | 10 | Number of scenarios. |
 | `--seed-start S` | random | Seeds are S, S+1, …, so the same command reproduces the same scenes. |
-| `--repeats R` | 3 | Plans per arm per task. OMPL is random, so the cost label is the best of R. |
+| `--repeats R` | 3 | Plans per arm per task. OMPL is random, so the  label is the best of R. |
 | `--out DIR` | `panda_moveit/data` | Output folder. |
 | `--speed`, `--accel` | 0.5 | Keep these fixed within one dataset, since trajectory times depend on them. |
 
@@ -165,7 +165,7 @@ data/
 | `rejected_tasks` | Tasks skipped because neither arm could do them. |
 | `planner`, `cost_definition`, `speed`, `accel` | MoveIt settings used for every plan (planner, time limit, attempts, tolerances), the cost formula, and the speed scaling. |
 
-Cost is `C = T_total + 1.0 * L_total`, where `T_total` is total trajectory time in seconds and `L_total` is total joint path length in radians, both summed over all motion stages. The separate terms are stored too, so a different weighting can be used later.
+Cost is `C = T_total + 1.0 * L_total`, where `T_total` is total trajectory time in seconds and `L_total` is total joint path length in radians, both summed over all motion stages. The separate terms are stored too, so a different weighting can be used later.Could also compute more complicated Cost equations such as Hungarian Cost
 
 ### Large plan-only datasets (training data)
 
