@@ -228,10 +228,10 @@ Use `--seeds 2000 1000` etc. for 1,000 seeds; keep the starting points so the ra
 python3 -m venv ~/lerobot_venv
 ~/lerobot_venv/bin/pip install "lerobot[dataset,training,diffusion]==0.6.1"
 
-~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/convert_lerobot.py --data ~/panda_data --out ~/lerobot_data
+~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/convert_lerobot.py --data ~/panda_data --out ~/lerobot_data --height-map
 ```
 
-Run it after collection has finished: it uses all CPU cores, which would slow MoveIt and inflate the planning times being recorded. It takes about 0.5 s per episode.
+Run it after collection has finished: it uses all CPU cores, which would slow MoveIt and inflate the planning times being recorded. With `--height-map` it takes about 2–3 h for 2,000 seeds.
 
 - **Episode:** one arm's best feasible plan for one task, resampled to 5 Hz (`--fps`). Infeasible (trial, arm) pairs are listed in `infeasible.jsonl` instead.
 - **One shared model for both arms:** every input is in the acting arm's base frame, the image is rotated 180° for the second arm (the camera is above the midpoint between the bases, so this puts the second arm where the first one is), and the arm ID is the last two numbers of `observation.environment_state`. `--arms first` builds a single-arm dataset instead.
@@ -251,13 +251,13 @@ Train (one checkpoint per `--save_freq` steps under `--output_dir`):
 ~/lerobot_venv/bin/lerobot-train --policy.type=diffusion \
     --dataset.repo_id=dual_panda_train --dataset.root=$HOME/lerobot_data/train \
     --policy.n_obs_steps=1 --policy.horizon=32 --policy.n_action_steps=32 --policy.drop_n_last_frames=0 \
-    --policy.noise_scheduler_type=DDIM --policy.num_inference_steps=10 \
+    --policy.noise_scheduler_type=DDIM --policy.num_inference_steps=10 --policy.down_dims='[256,512,1024]' \
     --policy.use_separate_rgb_encoder_per_camera=true --policy.push_to_hub=false \
     --batch_size=64 --steps=100000 --save_freq=10000 --num_workers=8 \
     --wandb.enable=false --output_dir=outputs/diffusion_dual_panda
 ```
 
-`drop_n_last_frames=0` matters: the default (7) never starts a training chunk in an episode's last 7 frames, which hides most of the lower and retreat stages in these ~24-frame episodes. Lower `--batch_size` on smaller GPUs (16 fits in 8 GB).
+`drop_n_last_frames=0` matters: the default (7) never starts a training chunk in an episode's last 7 frames, which hides most of the lower and retreat stages in these ~24-frame episodes. `down_dims='[256,512,1024]'` is a smaller U-Net (88M parameters instead of 276M): the 32×8 action chunks don't need the default, and it samples ~3× faster. With the height map in the dataset, the policy uses it as a second camera with its own encoder. Lower `--batch_size` on smaller GPUs (16 fits in 8 GB).
 
 ## Evaluating a trained policy
 
