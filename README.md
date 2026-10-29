@@ -261,6 +261,8 @@ panda_act/
 
 Arms that cannot reach the cube fail at `grasp_select` within a second and are logged with `success: false` (2-3 frames); train on `success: true` episodes only. The scene is re-applied before a run whenever the previous one moved anything. Resumable by seed like `collect.py`; `--arms first` records one arm only.
 
+Checked on 2 seeds (16 executions): every arm that could reach its cube completed the task (10/10, placed within 0.5–4 mm); after each reset the cube was within 0.5 mm and both arms within 0.001 rad of the scenario; video, depth and `frames.npz` had the same frame count at exactly 0.1 s spacing; the converted dataset trained with ACT (200-step test, loss 15.4 → 3.6).
+
 Convert successful executions to LeRobot datasets with `convert_executions.py` (LeRobot venv), then train ACT:
 
 ```bash
