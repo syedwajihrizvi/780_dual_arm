@@ -294,6 +294,17 @@ Run it after collection has finished: it uses all CPU cores, which would slow Mo
 - **One shared model for both arms:** every input is in the acting arm's base frame, the image is rotated 180° for the second arm (the camera is above the midpoint between the bases, so this puts the second arm where the first one is), and the arm ID is the last two numbers of `observation.environment_state`. `--arms first` builds a single-arm dataset instead.
 - **Splits:** `train/`, `val/` (seeds 1700–1849) and `test/` (seeds 1850–1999), each a LeRobot dataset, with `<split>_episodes.jsonl` mapping each episode to its seed, task, arm and MoveIt cost.
 
+**Adding new seeds without reconverting.** Convert only the new seeds (`--seeds FIRST COUNT`, from your own folder or a teammate's), then merge with what is already converted. `merge_lerobot.py` refuses inputs that share a seed or were converted with different settings (fps, height map, arms, ...), renumbers the episode logs and recomputes the normalization stats:
+
+```bash
+~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/convert_lerobot.py --data ~/teammate_data \
+    --seeds 2000 2000 --out ~/lerobot_parts/seeds_2000 --height-map
+~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/merge_lerobot.py \
+    ~/lerobot_data ~/lerobot_parts/seeds_2000 --out ~/lerobot_merged
+```
+
+`--out` must be a new folder; check it, then replace `~/lerobot_data` with it. Converting seeds in parts and merging gives the same frames and the same feature stats as converting them all at once (only LeRobot's bookkeeping stats for the `index` and `episode_index` columns differ, and training doesn't use them).
+
 | Feature | Shape | Contents |
 |---|---|---|
 | `observation.state` | 8 | 7 joint angles + gripper width (0.04 open, 0.015 closed) |
@@ -362,6 +373,7 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 | `panda_moveit/convert_executions.py` | Converts recorded executions to LeRobot datasets for ACT (LeRobot venv). |
 | `panda_moveit/recorder.py` | Records executions: video, depth, joint states, gripper commands, cube pose at 10 Hz. |
 | `panda_moveit/convert_lerobot.py` | Converts collected plans to LeRobot datasets (run with the LeRobot venv). |
+| `panda_moveit/merge_lerobot.py` | Merges separately converted seed ranges into one set of datasets (LeRobot venv). |
 | `panda_moveit/evaluate_policy.py` | Samples a trained policy on held-out seeds and compares with MoveIt. |
 | `panda_moveit/collision_check.py`, `panda_kinematics.py` | Fast approximate collision check and forward kinematics for generated trajectories. |
 | `panda_moveit/plot_trajectories.py`, `data_stats.py` | Trajectory plots over the scene image; dataset statistics. |

@@ -16,6 +16,9 @@ Writes one dataset per split (split by seed, never by task):
 Run with the LeRobot venv, not the ROS Python:
     ~/lerobot_venv/bin/python convert_lerobot.py --data ~/panda_data --out ~/lerobot_data
     ~/lerobot_venv/bin/python convert_lerobot.py --data ~/panda_data --out /tmp/lr --max-trials 20
+
+To add new seeds without reconverting the old ones, convert only them
+(--seeds) and combine the outputs with merge_lerobot.py.
 """
 import argparse
 import json
@@ -175,6 +178,8 @@ def main():
     p.add_argument('--arms', nargs='+', default=['first', 'second'],
                    help='one arm only gives a per-arm dataset')
     p.add_argument('--height-map', action='store_true', help='phase 2: add the depth height map')
+    p.add_argument('--seeds', type=int, nargs=2, metavar=('FIRST', 'COUNT'),
+                   help='convert only these seeds (then merge_lerobot.py)')
     p.add_argument('--max-trials', type=int, help='convert only the first N trials (testing)')
     p.add_argument('--overwrite', action='store_true')
     args = p.parse_args()
@@ -187,6 +192,9 @@ def main():
     out.mkdir(parents=True)
 
     trials = [json.loads(line) for line in (data / 'trials.jsonl').read_text().splitlines() if line]
+    if args.seeds:
+        first, count = args.seeds
+        trials = [t for t in trials if first <= t['seed'] < first + count]
     trials.sort(key=lambda t: (t['seed'], t['task_index']))
     if args.max_trials:
         trials = trials[:args.max_trials]
@@ -246,7 +254,7 @@ def main():
             dataset.finalize()
 
     (out / 'conversion.json').write_text(json.dumps(dict(
-        source=str(data), trials=len(trials), episodes=dict(counts), fps=args.fps,
+        source=str(data), seeds=args.seeds, trials=len(trials), episodes=dict(counts), fps=args.fps,
         arms=args.arms, splits={**SPLITS, 'train': 'all other seeds'},
         image_size=IMAGE_SIZE, second_arm_image_rotated_180=True, height_map=args.height_map,
         gripper=dict(open=GRIPPER_OPEN, closed=GRIPPER_CLOSE), bases=BASES,
