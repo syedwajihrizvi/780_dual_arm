@@ -271,7 +271,7 @@ Convert successful executions to LeRobot datasets with `convert_executions.py` (
 ~/lerobot_venv/bin/lerobot-train --policy.type=act \
     --dataset.repo_id=dual_panda_act_train --dataset.root=$HOME/lerobot_act/train \
     --policy.chunk_size=32 --policy.n_action_steps=32 --policy.push_to_hub=false \
-    --batch_size=64 --steps=100000 --save_freq=10000 --num_workers=8 \
+    --batch_size=64 --steps=100000 --save_freq=10000 --num_workers=4 \
     --wandb.enable=false --output_dir=outputs/act_dual_panda
 ```
 
@@ -310,11 +310,13 @@ Train (one checkpoint per `--save_freq` steps under `--output_dir`):
     --policy.n_obs_steps=1 --policy.horizon=32 --policy.n_action_steps=32 --policy.drop_n_last_frames=0 \
     --policy.noise_scheduler_type=DDIM --policy.num_inference_steps=10 --policy.down_dims='[256,512,1024]' \
     --policy.use_separate_rgb_encoder_per_camera=true --policy.push_to_hub=false \
-    --batch_size=64 --steps=100000 --save_freq=10000 --num_workers=8 \
+    --batch_size=64 --steps=100000 --save_freq=10000 --num_workers=4 \
     --wandb.enable=false --output_dir=outputs/diffusion_dual_panda
 ```
 
 `drop_n_last_frames=0` matters: the default (7) never starts a training chunk in an episode's last 7 frames, which hides most of the lower and retreat stages in these ~24-frame episodes. `down_dims='[256,512,1024]'` is a smaller U-Net (88M parameters instead of 276M): the 32×8 action chunks don't need the default, and it samples ~3× faster. With the height map in the dataset, the policy uses it as a second camera with its own encoder. Lower `--batch_size` on smaller GPUs (16 fits in 8 GB).
+
+**Memory and startup.** Each data-loader worker (`--num_workers`) holds its own copy of the dataset index and video decoders. On a 16 GB PC, 8 workers next to Gazebo, RViz and a browser ran out of RAM and the kernel killed processes; 4 is safe there. Use 8 only with 32 GB or more, and don't run the simulation while training (training does not need it). The first ~100 steps can take several minutes while the decoders warm up (log shows a large `data_s`); after that, data loading is ~0.05 s per step. On the RTX 4060 with batch 16 the smaller U-Net trains at ~5 steps/s, using 2.4 GB of GPU memory.
 
 ## Evaluating a trained policy
 
