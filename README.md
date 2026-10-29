@@ -261,6 +261,20 @@ panda_act/
 
 Arms that cannot reach the cube fail at `grasp_select` within a second and are logged with `success: false` (2-3 frames); train on `success: true` episodes only. The scene is re-applied before a run whenever the previous one moved anything. Resumable by seed like `collect.py`; `--arms first` records one arm only.
 
+Convert successful executions to LeRobot datasets with `convert_executions.py` (LeRobot venv), then train ACT:
+
+```bash
+~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/convert_executions.py --data ~/panda_act --out ~/lerobot_act --height-map
+
+~/lerobot_venv/bin/lerobot-train --policy.type=act \
+    --dataset.repo_id=dual_panda_act_train --dataset.root=$HOME/lerobot_act/train \
+    --policy.chunk_size=32 --policy.n_action_steps=32 --policy.push_to_hub=false \
+    --batch_size=64 --steps=100000 --save_freq=10000 --num_workers=8 \
+    --wandb.enable=false --output_dir=outputs/act_dual_panda
+```
+
+Same features as the diffusion dataset (below), but every frame has the live view: `observation.images.overhead` and `observation.images.height` are that frame's RGB and height map, `observation.state` is the measured joints plus the mean finger position, and `action` is the next frame's measured joints plus the commanded gripper width. 10 Hz (`--fps 5` halves it). The idle second at the end of each recording is trimmed to 2 frames. Splits: seeds ending in 9 are `val/`, the rest `train/`. About 2 s per episode to convert.
+
 ## Converting to a LeRobot dataset
 
 `convert_lerobot.py` turns `collect.py` output into LeRobot datasets for Diffusion Policy. It runs in its own Python environment, not the ROS one:
@@ -341,6 +355,7 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 | `panda_moveit/demonstrations.py` | Unattended plan-both-execute-best demonstrations. |
 | `panda_moveit/collect.py` | Plan-only paired-trial collector (`--execute` to also run and record each task); also the camera capture code. |
 | `panda_moveit/collect_executions.py` | Execute-only recorded demonstrations for closed-loop policies (ACT). |
+| `panda_moveit/convert_executions.py` | Converts recorded executions to LeRobot datasets for ACT (LeRobot venv). |
 | `panda_moveit/recorder.py` | Records executions: video, depth, joint states, gripper commands, cube pose at 10 Hz. |
 | `panda_moveit/convert_lerobot.py` | Converts collected plans to LeRobot datasets (run with the LeRobot venv). |
 | `panda_moveit/evaluate_policy.py` | Samples a trained policy on held-out seeds and compares with MoveIt. |
