@@ -241,6 +241,26 @@ panda_exec/executions/seed_<seed>_task_<i>_<arm>/
 
 In the trial record, `arms.<arm>.executed` holds the outcome (`success`, `failed_stage`, place error), each stage with `t_end` (seconds into the recording, to label frames by stage) and the executed trajectories, plus `recording` (folder, frame count). Executions can fail where the plan succeeded (e.g. the gripper slips); they are kept with `success: false`. The recorder runs in a separate process: in-process gz-transport subscriptions stall the Gazebo service calls the collector makes.
 
+### Execute-only demonstrations (closed-loop policies such as ACT)
+
+`collect_executions.py` skips the repeated plan-only attempts: each arm plans and executes each task once in Gazebo while `recorder.py` films it. About 80 s per seed (4 tasks, both arms), so ~11 h for 500 seeds on one PC; ~1 MB per execution. No cost labels; use it for policies that need what the camera sees during the motion.
+
+```bash
+setsid nohup python3 -u src/panda_moveit/panda_moveit/collect_executions.py --seeds 6000 500 --out ~/panda_act \
+    > ~/panda_act_collect.log 2>&1 < /dev/null &
+```
+
+```text
+panda_act/
+├── camera.json, scenarios/, images/            # as in plan-only output
+├── episodes.jsonl                               # one line per (seed, task, arm): success, failed_stage, frames
+└── episodes/seed_<seed>_task_<i>_<arm>/
+    ├── rgb.mp4, depth.npz, frames.npz           # the recording, as above
+    └── episode.json                             # outcome, stages with t_end, executed trajectories
+```
+
+Arms that cannot reach the cube fail at `grasp_select` within a second and are logged with `success: false` (2-3 frames); train on `success: true` episodes only. The scene is re-applied before a run whenever the previous one moved anything. Resumable by seed like `collect.py`; `--arms first` records one arm only.
+
 ## Converting to a LeRobot dataset
 
 `convert_lerobot.py` turns `collect.py` output into LeRobot datasets for Diffusion Policy. It runs in its own Python environment, not the ROS one:
@@ -320,6 +340,7 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 | `panda_moveit/scenario.py` | Scenario generator and applier. |
 | `panda_moveit/demonstrations.py` | Unattended plan-both-execute-best demonstrations. |
 | `panda_moveit/collect.py` | Plan-only paired-trial collector (`--execute` to also run and record each task); also the camera capture code. |
+| `panda_moveit/collect_executions.py` | Execute-only recorded demonstrations for closed-loop policies (ACT). |
 | `panda_moveit/recorder.py` | Records executions: video, depth, joint states, gripper commands, cube pose at 10 Hz. |
 | `panda_moveit/convert_lerobot.py` | Converts collected plans to LeRobot datasets (run with the LeRobot venv). |
 | `panda_moveit/evaluate_policy.py` | Samples a trained policy on held-out seeds and compares with MoveIt. |
