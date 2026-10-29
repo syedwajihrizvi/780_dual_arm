@@ -719,6 +719,8 @@ def run(node, cube, cube_xyz, place_xyz, pregrasp_height, lift_height, execute,
         entry = dict(stage=stage, **record)
         if tcp is not None:
             entry['tcp_xyz'] = list(tcp)
+        if execute:
+            entry['t_end'] = time.monotonic()  # lines stages up with a recording
         stages.append(entry)
         if not quiet:
             print(json.dumps(entry))

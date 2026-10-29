@@ -10,7 +10,8 @@ times (OMPL is random, so a single plan is a noisy cost label). Every
 attempt is logged with its joint trajectories; the cheapest feasible one
 (cost T + lambda*L) is the arm's label and its policy training episode.
 --execute also re-applies the scenario and executes the task once per arm,
-logging the executed outcome next to the plans.
+logging the executed outcome next to the plans and recording it (RGB video,
+depth, joint states, gripper commands, cube pose at 10 Hz; see recorder.py).
 
     collect.py --seeds 0 50
     collect.py --seeds 0 5 --execute --out ~/panda_data_exec
@@ -22,6 +23,7 @@ Output (--out, default ~/panda_data), resumable by seed:
     images/scene_<seed>_depth.npz  float32 depth in metres (key 'depth'), same frame
     trials/seed_<seed>_task_<i>.json  both arms' plans with joint trajectories
     trials.jsonl                   one summary line per (seed, task)
+    executions/seed_<seed>_task_<i>_<arm>/  with --execute: rgb.mp4, depth.npz, frames.npz
 """
 import argparse
 import json
@@ -42,6 +44,7 @@ from pick_place import (ARMS, COST_DEFINITION, PLANNER_SETTINGS, GzNode, TCP_OFF
 from gz.msgs10.camera_info_pb2 import CameraInfo
 from gz.msgs10.image_pb2 import Image
 from planning_scene_setup import parse_pose
+from recorder import Recorder
 from scenario import CUBE_Z, ScenarioApplier, generate
 
 CAMERA_TOPIC = '/overhead_camera'
@@ -156,8 +159,9 @@ def plan_arm(node, cube, place_xyz, repeats):
                 total_planning_wall_time=sum(p['wall_time'] for p in plans))
 
 
-def evaluate(node, scenario, task, repeats, execute, applier):
-    """Plan (and optionally execute) one task with one arm."""
+def evaluate(node, scenario, task, repeats, execute, applier, recorder=None, folder=None):
+    """Plan (and optionally execute) one task with one arm; an execution is
+    recorded into folder."""
     cube = next(c for c in scenario['cubes'] if c['name'] == task['cube'])
     tray = next(t for t in scenario['trays'] if t['name'] == task['tray'])
     place_xyz = (tray['xyz'][0], tray['xyz'][1], CUBE_Z)
@@ -169,9 +173,17 @@ def evaluate(node, scenario, task, repeats, execute, applier):
     record = plan_arm(node, cube, place_xyz, repeats)
     if execute:
         live = gz_model_poses()[cube['name']]
-        stages = run(node, cube['name'], live[0], place_xyz, PREGRASP_HEIGHT,
-                     LIFT_HEIGHT, True, live[1], quiet=True, keep_trajectories=True)
-        record['executed'] = dict(**summarize(stages, True), stages=stages)
+        t0 = recorder.start(folder, cube['name'])
+        try:
+            stages = run(node, cube['name'], live[0], place_xyz, PREGRASP_HEIGHT,
+                         LIFT_HEIGHT, True, live[1], quiet=True, keep_trajectories=True)
+        finally:
+            recording = recorder.stop()
+        for stage in stages:
+            stage['t_end'] -= t0  # seconds into the recording
+        record['executed'] = dict(**summarize(stages, True), stages=stages,
+                                  recording=dict(folder=f'{folder.parent.name}/{folder.name}',
+                                                 **recording))
     return record
 
 
@@ -187,7 +199,7 @@ ARM_SUMMARY = ('feasible', 'best_plan_index', 'best_cost', 'best_trajectory_dura
                'best_joint_path_length', 'single_plan_wall_time', 'total_planning_wall_time')
 
 
-def collect_seed(seed, applier, args, out):
+def collect_seed(seed, applier, args, out, recorder=None):
     """Apply one scenario, capture it and evaluate its tasks with both arms."""
     scenario = applier.apply(generate(seed))
     need_info = not (out / 'camera.json').exists()
@@ -201,7 +213,8 @@ def collect_seed(seed, applier, args, out):
     lines = []
     for i, task in enumerate(choose_tasks(scenario, args.tasks)):
         arms = {name: evaluate(applier.arms[name], scenario, task, args.repeats,
-                               args.execute, applier)
+                               args.execute, applier, recorder,
+                               out / 'executions' / f'seed_{seed}_task_{i}_{name}')
                 for name in ARMS}
         trial_file = f'trials/seed_{seed}_task_{i}.json'
         info = dict(seed=seed, task_index=i, **task, **task_poses(scenario, task),
@@ -248,6 +261,7 @@ def main():
         executor.add_node(node)
     spin = Thread(target=executor.spin, daemon=True)
     spin.start()
+    recorder = Recorder(applier.arms) if args.execute else None
     failures = 0  # consecutive skipped seeds
     try:
         for seed in range(args.seeds[0], args.seeds[0] + args.seeds[1]):
@@ -257,7 +271,7 @@ def main():
             start = time.monotonic()
             for attempt in range(SEED_ATTEMPTS):
                 try:
-                    lines = collect_seed(seed, applier, args, out)
+                    lines = collect_seed(seed, applier, args, out, recorder)
                     break
                 except Exception as e:  # unattended: a rerun retries skipped seeds
                     print(f'seed {seed}: attempt {attempt + 1} failed, {type(e).__name__}: {e}')
@@ -274,6 +288,8 @@ def main():
                     f.write(json.dumps(line) + '\n')
             print(f'seed {seed}: {len(lines)} paired trials in {time.monotonic() - start:.0f}s')
     finally:
+        if recorder:
+            recorder.close()
         executor.shutdown()
         for node in applier.arms.values():
             node.destroy_node()

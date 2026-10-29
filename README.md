@@ -220,6 +220,27 @@ Use `--seeds 2000 1000` etc. for 1,000 seeds; keep the starting points so the ra
 
 **Split train/validation/test by seed, never by task.** A seed's tasks share one scene and image, so splitting them would let the model see test scenes during training. Our split: seeds 1700–1849 validation and 1850–1999 test, every other seed (0–1699 and all seeds from other PCs) for training.
 
+### Recorded executions (video)
+
+`--execute` also runs every task with each arm in Gazebo (the scene is re-applied before each run) and records the run at the camera's 10 Hz. It is for closed-loop policies and videos; the plan-only data stays the training set for the paired arm-assignment labels. Use its own `--out` folder and a seed range no plan-only run uses:
+
+```bash
+setsid nohup python3 -u src/panda_moveit/panda_moveit/collect.py --seeds 6000 500 --execute --out ~/panda_exec \
+    > ~/panda_exec_collect.log 2>&1 < /dev/null &
+```
+
+About 40 s per task (3 plans plus one execution per arm), so ~2.5 min per seed and ~20 h for 500 seeds; ~2 MB per execution. Split seed ranges across PCs as above (e.g. 6000, 6500, 7000). Besides the plan-only files, each (seed, task, arm) gets:
+
+```text
+panda_exec/executions/seed_<seed>_task_<i>_<arm>/
+├── rgb.mp4      # 960x720 overhead video, one frame per row of frames.npz
+├── depth.npz    # 'depth_mm': uint16 (n, 360, 480), millimetres, 0 = no return
+└── frames.npz   # t, sim_t; per arm <arm>_position and <arm>_velocity (n, 9: joints 1-7, fingers 1-2)
+                 #   and <arm>_gripper_command (commanded width); cube_pose (n, 4: x, y, z, yaw)
+```
+
+In the trial record, `arms.<arm>.executed` holds the outcome (`success`, `failed_stage`, place error), each stage with `t_end` (seconds into the recording, to label frames by stage) and the executed trajectories, plus `recording` (folder, frame count). Executions can fail where the plan succeeded (e.g. the gripper slips); they are kept with `success: false`. The recorder runs in a separate process: in-process gz-transport subscriptions stall the Gazebo service calls the collector makes.
+
 ## Converting to a LeRobot dataset
 
 `convert_lerobot.py` turns `collect.py` output into LeRobot datasets for Diffusion Policy. It runs in its own Python environment, not the ROS one:
@@ -298,7 +319,8 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 | `panda_moveit/pick_place.py` | Pick-and-place pipeline, gripper control, Gazebo and planning-scene helpers. |
 | `panda_moveit/scenario.py` | Scenario generator and applier. |
 | `panda_moveit/demonstrations.py` | Unattended plan-both-execute-best demonstrations. |
-| `panda_moveit/collect.py` | Plan-only paired-trial collector; also the camera capture code. |
+| `panda_moveit/collect.py` | Plan-only paired-trial collector (`--execute` to also run and record each task); also the camera capture code. |
+| `panda_moveit/recorder.py` | Records executions: video, depth, joint states, gripper commands, cube pose at 10 Hz. |
 | `panda_moveit/convert_lerobot.py` | Converts collected plans to LeRobot datasets (run with the LeRobot venv). |
 | `panda_moveit/evaluate_policy.py` | Samples a trained policy on held-out seeds and compares with MoveIt. |
 | `panda_moveit/collision_check.py`, `panda_kinematics.py` | Fast approximate collision check and forward kinematics for generated trajectories. |
