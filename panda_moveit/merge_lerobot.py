@@ -74,9 +74,13 @@ def main():
         parts = [i for i in inputs if (i / split).exists()]
         if not parts:
             continue
+        # concatenate_data=False copies each data file as it is: packing files together
+        # holds two of them in memory (~2.5 GB each with the height-map images) and ran
+        # a 16 GB PC out of RAM.
         aggregate_datasets(repo_ids=[f'{args.repo_prefix}_{split}'] * len(parts),
                            aggr_repo_id=f'{args.repo_prefix}_{split}',
-                           roots=[i / split for i in parts], aggr_root=out / split)
+                           roots=[i / split for i in parts], aggr_root=out / split,
+                           concatenate_data=False)
         offset = 0
         with (out / f'{split}_episodes.jsonl').open('w') as log:
             for i in parts:
