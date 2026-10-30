@@ -243,7 +243,7 @@ In the trial record, `arms.<arm>.executed` holds the outcome (`success`, `failed
 
 ### Execute-only demonstrations (closed-loop policies such as ACT)
 
-`collect_executions.py` skips the repeated plan-only attempts: each arm plans and executes each task once in Gazebo while `recorder.py` films it. About 80 s per seed (4 tasks, both arms), so ~11 h for 500 seeds on one PC; ~1 MB per execution. No cost labels; use it for policies that need what the camera sees during the motion.
+`collect_executions.py` skips the repeated plan-only attempts: each arm plans and executes each task once in Gazebo while `recorder.py` films it. About 90 s per seed (4 tasks, both arms), so ~10 h for 400 seeds on one PC; ~11 MB per seed (15 MB at most so far), ~3 MB per seed after conversion. About 70% of executions succeed; the rest are mostly arms that cannot reach the cube. No cost labels; use it for policies that need what the camera sees during the motion.
 
 ```bash
 setsid nohup python3 -u src/panda_moveit/panda_moveit/collect_executions.py --seeds 6000 500 --out ~/panda_act \
@@ -259,9 +259,21 @@ panda_act/
     └── episode.json                             # outcome, stages with t_end, executed trajectories
 ```
 
+Keep the PC otherwise idle while it runs. Under heavy load (builds, training, conversions) the arm controllers fall behind, executions fail with `move failed (MoveIt code -4)` and seeds get skipped; light use (browser, editor) is fine. Rerun the same command afterwards to fill in skipped seeds.
+
+**Collecting on several PCs.** Give each PC its own seed range (ours: 8000–8549; a teammate 3000–3099), then combine the output folders before converting: copy `scenarios/`, `images/` and `episodes/` into one folder (names include the seed, so nothing collides) and concatenate the `episodes.jsonl` files. Check first that no seed appears in two folders:
+
+```bash
+cat ~/panda_act/episodes.jsonl ~/friend_act/episodes.jsonl | python3 -c "import sys, json, collections; c = collections.Counter((l['seed'], l['task_index'], l['arm']) for l in map(json.loads, sys.stdin)); print([k for k, v in c.items() if v > 1] or 'no duplicates')"
+rsync -a ~/friend_act/scenarios ~/friend_act/images ~/friend_act/episodes ~/panda_act/
+cat ~/friend_act/episodes.jsonl >> ~/panda_act/episodes.jsonl
+```
+
+Then rerun `convert_executions.py --overwrite` on the combined folder (a few minutes per 100 seeds).
+
 Arms that cannot reach the cube fail at `grasp_select` within a second and are logged with `success: false` (2-3 frames); train on `success: true` episodes only. The scene is re-applied before a run whenever the previous one moved anything. Resumable by seed like `collect.py`; `--arms first` records one arm only.
 
-Checked on 2 seeds (16 executions): every arm that could reach its cube completed the task (10/10, placed within 0.5–4 mm); after each reset the cube was within 0.5 mm and both arms within 0.001 rad of the scenario; video, depth and `frames.npz` had the same frame count at exactly 0.1 s spacing; the converted dataset trained with ACT (200-step test, loss 15.4 → 3.6).
+Checked on 2 seeds (16 executions): every arm that could reach its cube completed the task (10/10, placed within 0.5–4 mm); after each reset the cube was within 0.5 mm and both arms within 0.001 rad of the scenario; video, depth and `frames.npz` had the same frame count at exactly 0.1 s spacing; the converted dataset trained with ACT (200-step test, loss 15.4 → 3.6). On 100 seeds (8000–8099), the latest 60 successful episodes of each 50-seed run all had video, depth and joint frames at exactly 0.1 s with equal counts, and the cube ended within 6 mm of its target. A 1,000-step ACT run on the first 50 seeds (batch 8, ~11 steps/s on an RTX 4060 with the sim closed) took the loss from 11.0 to 2.1; the checkpoint predicts a 32-step chunk in ~7 ms.
 
 Convert successful executions to LeRobot datasets with `convert_executions.py` (LeRobot venv), then train ACT:
 
