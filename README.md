@@ -315,7 +315,7 @@ Run it after collection has finished: it uses all CPU cores, which would slow Mo
     ~/lerobot_data ~/lerobot_parts/seeds_2000 --out ~/lerobot_merged
 ```
 
-`--out` must be a new folder; check it, then replace `~/lerobot_data` with it. Converting seeds in parts and merging gives the same frames and the same feature stats as converting them all at once (only LeRobot's bookkeeping stats for the `index` and `episode_index` columns differ, and training doesn't use them).
+`--out` must be a new folder; check it, then replace `~/lerobot_data` with it. **Only for small datasets:** LeRobot's `aggregate_datasets` loads whole data files with their height-map images into RAM; merging a 3,000-seed train split with 2,000 more seeds was killed by the kernel at 11.5 GB on a 16 GB PC. For large datasets, combine the raw `collect.py` folders and run one full conversion instead (about 1 h per 1,000 seeds, low memory). Converting seeds in parts and merging gives the same frames and the same feature stats as converting them all at once (only LeRobot's bookkeeping stats for the `index` and `episode_index` columns differ, and training doesn't use them).
 
 | Feature | Shape | Contents |
 |---|---|---|
