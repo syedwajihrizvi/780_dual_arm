@@ -352,6 +352,20 @@ Train (one checkpoint per `--save_freq` steps under `--output_dir`):
 ```
 
 - **A sample is valid** if the gripper closes within 3 cm of the cube, opens within 3 cm of the place target, and the approximate collision check (`collision_check.py`) finds no contact. Its cost is `T + 1.0 * L`, computed like MoveIt's.
+- **Clearance margin:** a sample is only picked if it stays at least `--clearance` (default 0.01 m) from every obstacle, since the collision check is approximate. On the 90k checkpoint's validation run, picking with no margin left 33 of 600 chosen trajectories within 1 cm of an obstacle; 1 cm removes them all and lowers agreement only from 83.8% to 83.2%. 2 cm drops it to 79.5%, as more trials have no sample left to pick. The summary prints how many chosen trajectories pass within 1 cm, and how many trials pick no arm though MoveIt found one.
+- **Samples and denoising steps:** `--samples` (K per arm) and `--inference-steps` (DDIM steps; default from the checkpoint, 10) trade speed for quality. On the 90k checkpoint, validation, no margin:
+
+  | K | Steps | Agrees with MoveIt | Valid samples | Grasp error | Sampling + checks |
+  |---|---|---|---|---|---|
+  | 16 | 10 | 83.8% | 77.4% | 1.5 cm | 169 + 51 ms |
+  | 16 | 5 | 79.7% | 70.2% | 1.7 cm | 116 + 52 ms |
+  | 8 | 10 | 77.7% | 77.5% | 1.5 cm | 123 + 26 ms |
+  | 8 | 5 | 75.5% | 69.5% | 1.7 cm | 79 + 27 ms |
+  | 4 | 10 | 77.0% | 77.1% | 1.5 cm | 99 + 13 ms |
+  | 4 | 5 | 74.5% | 69.6% | 1.7 cm | 60 + 14 ms |
+  | any | 3 | 61–79% | ~36% | 3.0 cm | 46–104 ms + checks |
+
+  Fewer than 10 steps makes each sample less accurate; fewer samples mostly costs agreement, because there are fewer candidates to pick the cheapest from.
 - **Assignment:** the arm with the cheapest valid sample, compared with MoveIt's cheapest arm. The summary prints agreement, regret (extra MoveIt cost of the chosen arm), wrong-feasibility counts, sample validity, grasp/place error and decision time.
 - **Checked against MoveIt's own plans** as perfect samples: 98.9% valid (the rest are the collision check's 1.1% false positives), median grasp error 4 mm, cost within ~0.04.
 - **Speed:** both arms' samples are denoised in one batch, each arm's image is encoded once, and sampling runs in bf16 (`--no-bf16` to disable). On an RTX 4060, one chunk for 2 arms × 16 samples takes ~205 ms with the default U-Net and ~70 ms with `--policy.down_dims='[256,512,1024]'`.

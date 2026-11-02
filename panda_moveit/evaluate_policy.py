@@ -38,8 +38,10 @@ LAMBDA = 1.0            # pick_place.LAMBDA
 
 
 class Sampler:
-    def __init__(self, checkpoint, device, bf16):
+    def __init__(self, checkpoint, device, bf16, inference_steps=None):
         self.policy = DiffusionPolicy.from_pretrained(checkpoint).to(device).eval()
+        if inference_steps:  # DDIM steps; fewer is faster, the trained default is in the config
+            self.policy.diffusion.num_inference_steps = inference_steps
         self.pre, self.post = make_pre_post_processors(self.policy.config, pretrained_path=checkpoint)
         self.image_keys = list(self.policy.config.image_features)
         self.device = device
@@ -149,13 +151,16 @@ def main():
     p.add_argument('--samples', type=int, default=16, help='K per arm')
     p.add_argument('--max-trials', type=int)
     p.add_argument('--fps', type=int, default=5)
+    p.add_argument('--inference-steps', type=int, help='denoising steps (default: the checkpoint\'s)')
+    p.add_argument('--clearance', type=float, default=0.01,
+                   help='m; only pick samples at least this far from obstacles (the check is approximate)')
     p.add_argument('--no-bf16', action='store_true', help='sample in float32')
     p.add_argument('--out', default=str(Path.home() / 'eval.jsonl'))
     args = p.parse_args()
 
     data = Path(args.data).expanduser()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    sampler = Sampler(args.checkpoint, device, bf16=not args.no_bf16)
+    sampler = Sampler(args.checkpoint, device, bf16=not args.no_bf16, inference_steps=args.inference_steps)
     height = 'observation.images.height' in sampler.image_keys
     trials = [json.loads(l) for l in (data / 'trials.jsonl').read_text().splitlines() if l]
     trials = [t for t in trials if args.seeds[0] <= t['seed'] < args.seeds[1]]
@@ -183,10 +188,10 @@ def main():
         scores = {a: score_arm(samples[a], a, scenario, trial, args.fps) for a in ARMS}
         t2 = time.perf_counter()
 
-        row = dict(seed=trial['seed'], task_index=trial['task_index'],
+        row = dict(seed=trial['seed'], task_index=trial['task_index'], clearance_margin=args.clearance,
                    sample_time=t1 - t0, check_time=t2 - t1, arms={})
         for a in ARMS:
-            valid = [s for s in scores[a] if s['valid']]
+            valid = [s for s in scores[a] if s['valid'] and s['clearance'] >= args.clearance]
             best = min(valid, key=lambda s: s['cost'], default=None)
             row['arms'][a] = dict(
                 moveit_feasible=trial['arms'][a]['feasible'], moveit_cost=trial['arms'][a]['best_cost'],
@@ -224,6 +229,12 @@ def summarize(rows):
         print(f'regret (MoveIt cost of chosen arm - best): mean {np.mean(regrets):.3f}  '
               f'median {np.median(regrets):.3f}  >0.5: {sum(r > 0.5 for r in regrets)}')
     print(f'assigned an arm MoveIt found infeasible: {wrong_arm}')
+    missed = sum(r['policy_arm'] is None and r['moveit_arm'] is not None for r in rows)
+    chosen = [min((s for s in r['arms'][r['policy_arm']]['samples'] if s['valid']
+                   and s['clearance'] >= r.get('clearance_margin', 0)), key=lambda s: s['cost'])['clearance']
+              for r in rows if r['policy_arm']]
+    print(f'no arm picked though MoveIt found one: {missed}  '
+          f'chosen within 1 cm of an obstacle: {sum(c < 0.01 for c in chosen)}')
     print(f'samples valid (arms MoveIt can do): {100 * frac(feasible_samples, lambda s: s["valid"]):.1f}%  '
           f'collision-free: {100 * frac(feasible_samples, lambda s: not s["collision"]):.1f}%')
     ge = [s['grasp_error'] for s in feasible_samples if s['grasp_error'] is not None]
