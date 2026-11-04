@@ -10,6 +10,10 @@ and the approximate collision check:
 The arm with the cheapest valid sample is assigned (the fixed-formula
 baseline); that is compared with MoveIt's assignment.
 
+With --guide-obstacle / --guide-goal the samples are steered while they are
+denoised (guidance.py): between DDIM steps the predicted clean trajectory
+takes --guide-iters gradient steps on the obstacle and goal costs.
+
 Run with the LeRobot venv:
     ~/lerobot_venv/bin/python evaluate_policy.py \
         --checkpoint outputs/diffusion_dual_panda/checkpoints/last/pretrained_model \
@@ -24,8 +28,10 @@ import numpy as np
 import torch
 from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.policies.factory import make_pre_post_processors
+from safetensors.torch import load_file
 
 from collision_check import check_many
+from guidance import Guide
 from convert_lerobot import GRIPPER_CLOSE, GRIPPER_OPEN, SceneImages, environment_state
 from panda_kinematics import tcp_position
 
@@ -47,12 +53,16 @@ class Sampler:
         self.image_keys = list(self.policy.config.image_features)
         self.device = device
         self.bf16 = bf16 and device == 'cuda'
+        # Actions are min-max normalized to [-1, 1]; guidance works in joint angles.
+        stats = load_file(str(Path(checkpoint) / 'policy_postprocessor_step_0_unnormalizer_processor.safetensors'))
+        self.low, self.high = stats['action.min'].to(device), stats['action.max'].to(device)
 
     @torch.no_grad()
-    def chunk(self, states, envs, images, repeat=1):
+    def chunk(self, states, envs, images, repeat=1, guide=None):
         """Action chunks for observation rows: states (B, 8), envs (B, 71),
         images {key: (B, H, W, 3) uint8}. Each row is encoded once and
-        sampled `repeat` times -> (B * repeat, horizon, 8) numpy, rows grouped."""
+        sampled `repeat` times -> (B * repeat, horizon, 8) numpy, rows grouped.
+        guide: (Guide, arms, phases, iters, lr, guided steps), arms and phases per output row."""
         batch = {'observation.state': torch.as_tensor(states, dtype=torch.float32),
                  'observation.environment_state': torch.as_tensor(envs, dtype=torch.float32)}
         for key in self.image_keys:
@@ -66,20 +76,70 @@ class Sampler:
             # Encoding (two ResNets per row) is the fixed cost: do it once per
             # row, not once per sample, then denoise all samples together.
             cond = model._prepare_global_conditioning(batch).repeat_interleave(repeat, 0)
-            actions = model.conditional_sample(cond.shape[0], global_cond=cond)
+            if guide is None:
+                actions = model.conditional_sample(cond.shape[0], global_cond=cond)
+        if guide is not None:
+            start = torch.as_tensor(states, dtype=torch.float32, device=self.device).repeat_interleave(repeat, 0)
+            actions = self.guided_sample(cond, start, *guide)
         actions = actions[:, :self.policy.config.n_action_steps].float()  # n_obs_steps = 1
         return self.post(actions).cpu().numpy()
 
+    def guided_sample(self, cond, start, guide, arms, phases, iters, lr, guided_steps):
+        """DDIM as conditional_sample, but before each of the last
+        `guided_steps` steps the predicted clean sample takes `iters` gradient
+        steps on the guidance cost (in joint angles), and the step continues
+        from the corrected prediction. Earlier predictions are mostly noise."""
+        model = self.policy.diffusion
+        scheduler = model.noise_scheduler
+        scheduler.set_timesteps(model.num_inference_steps)
+        x = torch.randn(len(cond), model.config.horizon, model.config.action_feature.shape[0],
+                        device=self.device)
+        span = self.high - self.low
+        steps = scheduler.timesteps
+        for i, t in enumerate(steps):
+            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=self.bf16):
+                eps = model.unet(x, torch.full((len(x),), t, dtype=torch.long, device=self.device),
+                                 global_cond=cond).float()
+            if i < len(steps) - guided_steps:
+                x = scheduler.step(eps, t, x).prev_sample
+                continue
+            a = scheduler.alphas_cumprod[t].to(self.device)
+            clean = ((x - (1 - a).sqrt() * eps) / a.sqrt()).clamp(-1, 1)
+            reference = (clean + 1) / 2 * span + self.low
+            q = reference.clone()
+            for _ in range(iters):
+                with torch.enable_grad():
+                    q.requires_grad_(True)
+                    grad, = torch.autograd.grad(guide.cost(q, start, arms, phases, reference).sum(), q)
+                q = torch.minimum(torch.maximum(q.detach() - lr * grad, self.low), self.high)
+            clean = (q - self.low) / span * 2 - 1
+            eps = (x - a.sqrt() * clean) / (1 - a).sqrt()
+            x = scheduler.step(eps, t, x).prev_sample
+        return x
 
-def rollout(sampler, start, env, images, samples):
+
+def phase(traj):
+    """0 before the grasp, 1 carrying, 2 after the release (for guidance)."""
+    closed = np.flatnonzero(traj[:, 7] < GRIPPER_MID)
+    if not len(closed):
+        return 0
+    return 2 if (traj[closed[0]:, 7] > GRIPPER_MID).any() else 1
+
+
+def rollout(sampler, start, env, images, samples, guide=None):
     """K samples per arm, all arms in one batch per chunk. start/env/images
-    are dicts by arm; returns {arm: list of (frames, 8) arrays}."""
+    are dicts by arm; guide: (Guide, iters, lr, guided steps) or None. Returns {arm: list
+    of (frames, 8) arrays}."""
     arms = list(start)
     trajs = {(a, k): [np.asarray(start[a], np.float32)] for a in arms for k in range(samples)}
+
+    def steer(keys):
+        return guide and (guide[0], [a for a, _ in keys],
+                          [phase(np.array(trajs[key])) for key in keys], *guide[1:])
     # First chunk: every sample of an arm has the same observation.
     chunks = sampler.chunk(np.stack([start[a] for a in arms]), np.stack([env[a] for a in arms]),
                            {k: np.stack([images[a][k] for a in arms]) for k in sampler.image_keys},
-                           repeat=samples)
+                           repeat=samples, guide=steer(list(trajs)))
     for key, chunk in zip(trajs, chunks):
         trajs[key].extend(chunk)
     active = [key for key in trajs if not finished(np.array(trajs[key]))]
@@ -89,7 +149,7 @@ def rollout(sampler, start, env, images, samples):
         states = np.stack([trajs[key][-1] for key in active])
         envs = np.stack([env[a] for a, _ in active])
         imgs = {k: np.stack([images[a][k] for a, _ in active]) for k in sampler.image_keys}
-        chunks = sampler.chunk(states, envs, imgs)
+        chunks = sampler.chunk(states, envs, imgs, guide=steer(active))
         for key, chunk in zip(active, chunks):
             trajs[key].extend(chunk)
         active = [key for key in active if not finished(np.array(trajs[key]))]
@@ -159,6 +219,13 @@ def main():
                    help='store the usable samples (frames, 8) in each row, for execute_policy.py: '
                         'the chosen arm\'s first, the cheapest within EXEC_TOLERANCE of the cube '
                         'and the place target before the rest, then the other arm\'s')
+    p.add_argument('--guide-obstacle', type=float, default=0.0, help='guidance weight away from obstacles')
+    p.add_argument('--guide-goal', type=float, default=0.0, help='guidance weight towards the cube and target')
+    p.add_argument('--guide-smooth', type=float, default=0.1, help='guidance weight on rough corrections')
+    p.add_argument('--guide-margin', type=float, default=0.02, help='m; obstacle guidance acts below this gap')
+    p.add_argument('--guide-iters', type=int, default=3, help='gradient steps per denoising step')
+    p.add_argument('--guide-lr', type=float, default=1.0, help='gradient step size')
+    p.add_argument('--guide-steps', type=int, default=5, help='guide only the last N denoising steps')
     p.add_argument('--no-bf16', action='store_true', help='sample in float32')
     p.add_argument('--out', default=str(Path.home() / 'eval.jsonl'))
     args = p.parse_args()
@@ -186,7 +253,11 @@ def main():
         if device == 'cuda':
             torch.cuda.synchronize()
         t0 = time.perf_counter()
-        samples = rollout(sampler, start, env, images, args.samples)
+        guide = None
+        if args.guide_obstacle or args.guide_goal:
+            guide = (Guide(scenario, trial, device, args.guide_obstacle, args.guide_goal, args.guide_smooth,
+                           args.guide_margin, GRIPPER_MID), args.guide_iters, args.guide_lr, args.guide_steps)
+        samples = rollout(sampler, start, env, images, args.samples, guide)
         if device == 'cuda':
             torch.cuda.synchronize()
         t1 = time.perf_counter()
@@ -194,6 +265,8 @@ def main():
         t2 = time.perf_counter()
 
         row = dict(seed=trial['seed'], task_index=trial['task_index'], clearance_margin=args.clearance,
+                   guidance={k: getattr(args, f'guide_{k}') for k in ('obstacle', 'goal', 'smooth', 'margin',
+                                                                       'iters', 'lr', 'steps')} if guide else None,
                    sample_time=t1 - t0, check_time=t2 - t1, arms={})
         usable = {}
         for a in ARMS:
