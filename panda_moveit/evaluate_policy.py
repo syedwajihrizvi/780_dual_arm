@@ -35,6 +35,7 @@ GOAL_TOLERANCE = 0.03   # m; enough for cost estimation, not for execution
 STILL = 0.005           # rad per frame: below this the arm counts as stopped
 MAX_CHUNKS = 2
 LAMBDA = 1.0            # pick_place.LAMBDA
+EXEC_TOLERANCE = 0.01   # m; grasping a 4 cm cube cleanly needs the hand within ~1 cm
 
 
 class Sampler:
@@ -154,6 +155,10 @@ def main():
     p.add_argument('--inference-steps', type=int, help='denoising steps (default: the checkpoint\'s)')
     p.add_argument('--clearance', type=float, default=0.01,
                    help='m; only pick samples at least this far from obstacles (the check is approximate)')
+    p.add_argument('--save-trajectories', action='store_true',
+                   help='store the usable samples (frames, 8) in each row, for execute_policy.py: '
+                        'the chosen arm\'s first, the cheapest within EXEC_TOLERANCE of the cube '
+                        'and the place target before the rest, then the other arm\'s')
     p.add_argument('--no-bf16', action='store_true', help='sample in float32')
     p.add_argument('--out', default=str(Path.home() / 'eval.jsonl'))
     args = p.parse_args()
@@ -190,8 +195,11 @@ def main():
 
         row = dict(seed=trial['seed'], task_index=trial['task_index'], clearance_margin=args.clearance,
                    sample_time=t1 - t0, check_time=t2 - t1, arms={})
+        usable = {}
         for a in ARMS:
-            valid = [s for s in scores[a] if s['valid'] and s['clearance'] >= args.clearance]
+            usable[a] = [(s, t) for s, t in zip(scores[a], samples[a])
+                         if s['valid'] and s['clearance'] >= args.clearance]
+            valid = [s for s, _ in usable[a]]
             best = min(valid, key=lambda s: s['cost'], default=None)
             row['arms'][a] = dict(
                 moveit_feasible=trial['arms'][a]['feasible'], moveit_cost=trial['arms'][a]['best_cost'],
@@ -203,6 +211,25 @@ def main():
         row['policy_arm'] = min(pred, key=pred.get) if pred else None
         row['regret'] = (costs[row['policy_arm']] - costs[row['moveit_arm']]
                          if row['policy_arm'] in costs and row['moveit_arm'] else None)
+        if args.save_trajectories and row['policy_arm']:
+            # The arm is chosen by cost; what it executes must also be accurate:
+            # the cheapest sample is often 1-3 cm off, enough to miss the grasp.
+            # All usable samples are kept in the order execute_policy.py tries
+            # them (--exact-check): the chosen arm's, then the other arm's.
+            def error(st):
+                return max(st[0]['grasp_error'], st[0]['place_error'])
+
+            def ranked(options):
+                accurate = sorted((st for st in options if error(st) < EXEC_TOLERANCE),
+                                  key=lambda st: st[0]['cost'])
+                return accurate + sorted((st for st in options if error(st) >= EXEC_TOLERANCE), key=error)
+            other = next(a for a in ARMS if a != row['policy_arm'])
+            row['candidates'] = [
+                dict(arm=a, trajectory=np.round(t[:motion_end(t)], 5).tolist(),
+                     score={k: s[k] for k in ('cost', 'grasp_error', 'place_error', 'clearance')})
+                for a in (row['policy_arm'], other) for s, t in ranked(usable[a])]
+            row['trajectory'] = row['candidates'][0]['trajectory']
+            row['trajectory_score'] = row['candidates'][0]['score']
         out.write(json.dumps(row) + '\n')
         rows.append(row)
         if n % 25 == 0 or n == len(trials):

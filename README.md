@@ -372,6 +372,50 @@ Train (one checkpoint per `--save_freq` steps under `--output_dir`):
 
 Other tools: `plot_trajectories.py` draws TCP paths over the scene image, `data_stats.py` summarizes a dataset, `panda_kinematics.py` is numpy forward kinematics.
 
+## Executing the policy in Gazebo and comparing with MoveIt
+
+Three scripts run both methods on the same trials (same scenes, cubes, obstacles and arm starts) and compare them. Start the simulation first, then:
+
+```bash
+# 1. Sample with --save-trajectories (LeRobot venv; the sim can be running)
+~/lerobot_venv/bin/python src/panda_moveit/panda_moveit/evaluate_policy.py \
+    --checkpoint ~/diffusion_runs/diffusion_200k/checkpoints/200000/pretrained_model \
+    --seeds 1850 2000 --save-trajectories --out ~/eval_exec_test.jsonl
+# 2. Execute the policy's trajectories (system Python with ROS sourced)
+python3 src/panda_moveit/panda_moveit/execute_policy.py --plans ~/eval_exec_test.jsonl \
+    --out ~/exec_test.jsonl --exact-check --retime
+# 3. Run MoveIt on the same trials
+python3 src/panda_moveit/panda_moveit/execute_moveit.py --seeds 1850 2000 --out ~/moveit_test.jsonl
+# 4. Side-by-side table
+python3 src/panda_moveit/panda_moveit/compare_methods.py --policy Diffusion=~/exec_test.jsonl \
+    --moveit ~/moveit_test.jsonl
+```
+
+- **Policy execution (`execute_policy.py`):** the chosen sample is sent straight to the arm controller (`FollowJointTrajectory`), with no MoveIt planning, in three pieces split where the gripper acts. At the grasp the hand must be within 3 cm of the cube, then the gripper closes and the cube is attached; at the release it is detached and the gripper opens.
+- **MoveIt baseline (`execute_moveit.py`):** plans the task once with each arm (timed: the decision), picks the cheaper plan, then plans and executes it with that arm.
+- **Success, both methods:** the cube is within 1.5 cm of the place target 1 s after the release.
+- **Collision signs (policy):** MoveIt contacts along the commanded motion; tracking error above 0.15 rad after allowing for controller lag (obstacles are static in Gazebo, so a blocked arm is held back rather than moving them); other cubes moved more than 1 cm.
+- **`--exact-check`:** tries the samples in `evaluate_policy.py`'s order (the chosen arm's samples within 1 cm of the cube and the target by cost, then the rest by accuracy, then the other arm's) and executes the first with no MoveIt contact. If none is clear, the policy picks no arm. The check runs MoveIt's collision model in-process (`moveit_py`) on a copy of move_group's world: about 5 ms per trajectory against 2–6 s through the `/check_state_validity` service. Its time is added to the decision time.
+- **`--retime`:** samples often sit almost still for seconds after the release, jittering just enough not to count as stopped. This skips frames until a joint has moved 0.01 rad, keeps the sampled 5 Hz timing where the arm moves, and never exceeds the joint velocity limits scaled by `--speed`.
+- **Resuming:** all runners skip trials already in `--out`. If an arm ends up stuck at a joint limit after a collision, the runner stops; restart the simulation and rerun.
+
+**Results, test seeds 1850–1999 (600 trials), checkpoint `diffusion_200k` step 200000, K = 16, 10 DDIM steps, 1 cm clearance:**
+
+| | Diffusion | Diffusion, `--exact-check --retime` | MoveIt |
+|---|---|---|---|
+| Time to plan, median | 0.26 s | 0.27 s | 0.88 s |
+| Motion time, median (p90) | 5.80 s (12.8) | 4.35 s (5.6) | 4.25 s (5.6) |
+| Plan + motion, median (p90) | 6.05 s (13.0) | 4.62 s (5.9) | 5.22 s (6.5) |
+| Cost T + L, median | 10.31 | 8.80 | 8.91 |
+| Success, doable tasks | 86.1% | 85.9% | 97.8% |
+| Success when executed | 87.5% | 91.3% | 99.0% |
+| Collision signs | 11.8% | 0.5% | planned collision-free |
+| Arm = best arm (labels) | 83.5% | 83.2% | 95.0% |
+| No arm though one could | 2.5% | 5.7% | 1.2% |
+| Correctly said neither | 8/17 | 15/17 | 17/17 |
+
+The exact check rejected the first sample in 70 of 581 trials and found a clear one in 40; in 30 none of the 32 samples was clear. Collision failures became refusals, so success on doable tasks did not change; the remaining failures are mostly placements more than 1.5 cm off (46) and refusals. Both fixes were motivated by the first test run; the fixed numbers come from a fresh run on new samples.
+
 ## Viewing the camera in Gazebo
 
 1. In the Gazebo window, click the **⋮** menu in the top-right corner.
@@ -401,6 +445,9 @@ The camera topics exist only in Gazebo. To see them in RViz or `rqt_image_view`,
 | `panda_moveit/convert_lerobot.py` | Converts collected plans to LeRobot datasets (run with the LeRobot venv). |
 | `panda_moveit/merge_lerobot.py` | Merges separately converted seed ranges into one set of datasets (LeRobot venv). |
 | `panda_moveit/evaluate_policy.py` | Samples a trained policy on held-out seeds and compares with MoveIt. |
+| `panda_moveit/execute_policy.py` | Executes the policy's sampled trajectories in Gazebo (optional exact collision check and retiming). |
+| `panda_moveit/execute_moveit.py` | MoveIt baseline on the same trials: plan both arms, execute the cheaper. |
+| `panda_moveit/compare_methods.py` | Side-by-side table of policy runs and the MoveIt baseline. |
 | `panda_moveit/collision_check.py`, `panda_kinematics.py` | Fast approximate collision check and forward kinematics for generated trajectories. |
 | `panda_moveit/plot_trajectories.py`, `data_stats.py` | Trajectory plots over the scene image; dataset statistics. |
 | `panda_moveit/dual_joint_states.py` | Merges both arms' joint states into `/dual_joint_states` with prefixed names. |
