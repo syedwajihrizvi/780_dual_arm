@@ -211,6 +211,7 @@ def main():
     p.add_argument('--seeds', type=int, nargs=2, default=(1700, 1850), metavar=('FIRST', 'END'))
     p.add_argument('--samples', type=int, default=16, help='K per arm')
     p.add_argument('--max-trials', type=int)
+    p.add_argument('--only', help='jsonl whose rows (seed, task_index) are the only trials to run')
     p.add_argument('--fps', type=int, default=5)
     p.add_argument('--inference-steps', type=int, help='denoising steps (default: the checkpoint\'s)')
     p.add_argument('--clearance', type=float, default=0.01,
@@ -236,6 +237,9 @@ def main():
     height = 'observation.images.height' in sampler.image_keys
     trials = [json.loads(l) for l in (data / 'trials.jsonl').read_text().splitlines() if l]
     trials = [t for t in trials if args.seeds[0] <= t['seed'] < args.seeds[1]]
+    if args.only:
+        only = {(r['seed'], r['task_index']) for r in map(json.loads, Path(args.only).expanduser().open())}
+        trials = [t for t in trials if (t['seed'], t['task_index']) in only]
     trials.sort(key=lambda t: (t['seed'], t['task_index']))
     trials = trials[:args.max_trials] if args.max_trials else trials
 
