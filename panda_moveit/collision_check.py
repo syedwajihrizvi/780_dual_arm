@@ -25,10 +25,14 @@ LINK_RADII = [(0.08, 0.08), (0.07, 0.07), (0.07, 0.07), (0.065, 0.065),
               (0.065, 0.055), (0.055, 0.055), (0.055, 0.055)]
 FLANGE_RADIUS = 0.05
 SPHERE_STEP = 0.04
-# The palm only (flange frame, ~0.16 m wide along y); the thin fingers below it
-# reach into trays and around the cube by design, so they are not modelled.
-HAND_RADIUS = 0.03
-HAND_POINTS = [(0.0, y, z) for y in (-0.05, 0.0, 0.05) for z in (0.0, 0.035)]
+# The palm only; the thin fingers below it reach into trays and around the cube
+# by design, so they are not modelled. The hand is mounted on the flange (link8)
+# turned -45 deg about z (panda_hand_joint), so the palm's long axis, 0.2 m
+# across the fingers, lies along (1, 1, 0)/sqrt(2) in the flange frame. Width
+# and radius keep MoveIt's own plans passing (--validate: 0.5% flagged).
+HAND_RADIUS = 0.025
+HAND_POINTS = [(y * math.sqrt(0.5), y * math.sqrt(0.5), z)
+               for y in np.linspace(-0.075, 0.075, 7) for z in (0.0, 0.03)]
 TABLE_EXEMPT_JOINTS = 2   # base and shoulder sit on the table by design
 TRAY_WALL = (0.01, 0.03)   # thickness, height; outer size from the scenario
 EXACT_BELOW = 0.15         # m; other-arm gaps are exact below this, a lower bound above

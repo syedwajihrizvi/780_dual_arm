@@ -1,5 +1,7 @@
 # Diffusion policy with exact collision check and retiming: test seeds 1850–1999
 
+> **Correction, 2026-11-15.** MoveIt's planning time was overstated, so the claim below that diffusion beats MoveIt end to end (4.62 s against 5.22 s) no longer holds for this run: MoveIt's plan + motion is 4.64 s. A bug in the exact check also rejected some of the other arm's samples; with it fixed, success on doable tasks is 86.3%, not 85.9%. See [corrections_and_fast_sampler.md](corrections_and_fast_sampler.md).
+
 Date: 2026-11-03. This is the same policy and checkpoint as [diffusion_original.md](diffusion_original.md), with two fixes in how the executed trajectory is chosen and timed. It uses fresh samples.
 
 ## What changed
@@ -57,7 +59,7 @@ Times in seconds, given as median | mean | p90.
 **The exact check:**
 - It rejected the first-choice sample in 70 of 581 tasks; without the check, these would have been executed and would have collided.
 - It found a clear alternative in 40 of those.
-- In 30 tasks none of the 32 samples was clear, so the policy declined.
+- In 30 tasks none of the usable samples was clear, so the policy declined.
 
 **Failures (97):**
 - **46 at the place stage**, with no collision: the cube ended up more than 1.5 cm from the target.

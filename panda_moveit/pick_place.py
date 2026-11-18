@@ -685,11 +685,13 @@ class PickPlace(Node):
 
 
 def wait_done(future, timeout):
-    start = time.monotonic()
-    while not future.done():
-        if time.monotonic() - start > timeout:
-            raise TimeoutError('MoveIt request timed out')
-        time.sleep(0.03)
+    """Block until the future completes. Woken by the future's callback: a
+    polling sleep here rounded every MoveIt call up to its period (30 ms), which
+    dominated the planning times."""
+    done = Event()
+    future.add_done_callback(lambda _: done.set())
+    if not future.done() and not done.wait(timeout):
+        raise TimeoutError('MoveIt request timed out')
     return future.result()
 
 
@@ -704,8 +706,11 @@ def reset_cube(node, cube):
 
 
 def run(node, cube, cube_xyz, place_xyz, pregrasp_height, lift_height, execute,
-        cube_yaw=0.0, quiet=False, keep_trajectories=False):
+        cube_yaw=0.0, quiet=False, keep_trajectories=False, reuse_grasp_plans=False):
     """Run the stages in order, stopping at the first failure.
+
+    reuse_grasp_plans (plan-only): keep the pregrasp and descent that grasp
+    selection planned instead of planning both a second time.
 
     Pick stages turn the hand to the cube's yaw; from transport on the hand
     returns to the nominal grasp, so the cube is placed square to the world.
@@ -731,6 +736,10 @@ def run(node, cube, cube_xyz, place_xyz, pregrasp_height, lift_height, execute,
         nonlocal state
         plan = node.cartesian_to if cartesian else node.move_to_pose
         record, traj = plan(link8_pose(tcp, q), state, execute)
+        return accept(stage, record, traj, tcp, finger)
+
+    def accept(stage, record, traj, tcp, finger):
+        nonlocal state
         if record['success'] and not execute:
             state = end_state(traj, arm.finger_joint, finger)
         if keep_trajectories:
@@ -750,7 +759,7 @@ def run(node, cube, cube_xyz, place_xyz, pregrasp_height, lift_height, execute,
         # Pick the first grasp yaw whose pregrasp and descent both plan.
         pregrasp_tcp = above(cube_xyz, pregrasp_height)
         tried = []
-        q_grasp = None
+        q_grasp = selected = None
         select_start = time.monotonic()
         for hand_yaw in grasp_yaws(cube_yaw):
             q = grasp_orientation(arm, hand_yaw)
@@ -766,6 +775,7 @@ def run(node, cube, cube_xyz, place_xyz, pregrasp_height, lift_height, execute,
                 fraction = check['fraction']
                 if check['success']:
                     q_grasp = q
+                    selected = (record, traj, check, _)
             tried.append(dict(hand_yaw=hand_yaw, ik=True, pregrasp=record['success'],
                               descend_fraction=fraction))
             if q_grasp is not None:
@@ -776,10 +786,16 @@ def run(node, cube, cube_xyz, place_xyz, pregrasp_height, lift_height, execute,
                                         planning_time=time.monotonic() - select_start)):
             return stages
 
-        if not move('pregrasp', pregrasp_tcp, GRIPPER_OPEN, cartesian=False, q=q_grasp):
-            return stages
-        if not move('descend', cube_xyz, CUBE_SIZE / 2, q=q_grasp):
-            return stages
+        if reuse_grasp_plans and not execute:
+            # Their time is already in grasp_select's planning_time.
+            pre, pre_traj, down, down_traj = selected
+            accept('pregrasp', dict(pre, planning_time=0.0), pre_traj, pregrasp_tcp, GRIPPER_OPEN)
+            accept('descend', dict(down, planning_time=0.0), down_traj, cube_xyz, CUBE_SIZE / 2)
+        else:
+            if not move('pregrasp', pregrasp_tcp, GRIPPER_OPEN, cartesian=False, q=q_grasp):
+                return stages
+            if not move('descend', cube_xyz, CUBE_SIZE / 2, q=q_grasp):
+                return stages
 
         if execute:
             if not log('close_gripper', node.close_gripper()):

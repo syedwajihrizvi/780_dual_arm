@@ -1,5 +1,7 @@
 # MoveIt baseline: test seeds 1850–1999
 
+> **Correction, 2026-11-15.** The time to plan below (0.88 s) included a 30 ms polling delay in our own code. Re-measured, it is **0.38 s** (0.20 s estimated with the arms planned in parallel), and plan + motion is **4.64 s**. Success, cost and arm choice are unaffected. See [corrections_and_fast_sampler.md](corrections_and_fast_sampler.md).
+
 Date: 2026-11-03. No learning is involved here. This is the planner the diffusion policy is compared against.
 
 ## What was run

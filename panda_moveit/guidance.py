@@ -150,6 +150,40 @@ class Guide:
         self.bases = torch.stack([self.base[a] for a in ARMS])            # (2, 4, 4)
         self.targets = torch.stack([t(trial['cube_pose']['xyz']), t(trial['place_xyz'])])
 
+        self.names = [b[0] for b in boxes] + ['table', 'other_arm']
+
+    @torch.no_grad()
+    def clearance(self, joints, arms, lengths):
+        """collision_check.check_many on the GPU: for trajectories joints
+        (B, F, 7) of arms (B names), counting the first lengths[i] frames,
+        the smallest gap to anything in the scene (B,), with the object name
+        and frame where it happens."""
+        arm = torch.tensor([ARMS.index(a) for a in arms], device=joints.device)
+        centres, _ = spheres(joints, self.bases[arm][:, None], self.weights)      # (B, F, s, 3)
+        d = centres[..., None, :] - self.box_centre                               # (B, F, s, b, 3)
+        x = self.box_cos * d[..., 0] + self.box_sin * d[..., 1]
+        y = -self.box_sin * d[..., 0] + self.box_cos * d[..., 1]
+        outside = torch.clamp(torch.stack([x, y, d[..., 2]], -1).abs() - self.box_half, min=0.0)
+        gaps = [(outside.norm(dim=-1) - self.radii[:, None]).amin(-2)]            # (B, F, b)
+        table = centres[..., 2] - TABLE_Z - self.radii
+        gaps.append(torch.where(self.exempt, torch.inf, table).amin(-1, keepdim=True))
+        other = torch.cdist(centres.reshape(len(centres), -1, 3), self.other_centres[arm])
+        other = other.reshape(*centres.shape[:-1], -1) - self.radii[:, None] - self.other_radii
+        gaps.append(other.amin((-1, -2))[..., None])
+        gap = torch.cat(gaps, -1)                                                 # (B, F, objects)
+        frames = torch.arange(gap.shape[1], device=gap.device)
+        gap = torch.where(frames[None, :, None] < torch.as_tensor(lengths, device=gap.device)[:, None, None],
+                          gap, torch.inf)
+        value, index = gap.flatten(1).min(1)
+        value, index = value.cpu().numpy(), index.cpu().numpy()
+        other_name = {a: f'{ARMS[1 - ARMS.index(a)]}_arm' for a in ARMS}
+        out = []
+        for v, i, a in zip(value, index, arms):
+            name = self.names[i % gap.shape[2]]
+            out.append(dict(clearance=float(v), collision=bool(v < 0),
+                            object=other_name[a] if name == 'other_arm' else name, frame=int(i // gap.shape[2])))
+        return out
+
     def cost(self, q, start, arms, phases, reference):
         """Cost per row (B,) of chunks q (B, H, 8), each following its start
         state (B, 8); reference (B, H, 8) is the model's unguided prediction.

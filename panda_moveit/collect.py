@@ -132,13 +132,14 @@ def choose_tasks(scenario, count):
     return [dict(cube=c['name'], tray=rng.choice(scenario['trays'])['name']) for c in cubes]
 
 
-def plan_arm(node, cube, place_xyz, repeats):
+def plan_arm(node, cube, place_xyz, repeats, reuse_grasp_plans=False):
     """Plan-only attempts for one arm; the cheapest feasible one is its label."""
     plans = []
     for _ in range(repeats):
         start = time.monotonic()
         stages = run(node, cube['name'], cube['xyz'], place_xyz, PREGRASP_HEIGHT,
-                     LIFT_HEIGHT, False, cube['yaw'], quiet=True, keep_trajectories=True)
+                     LIFT_HEIGHT, False, cube['yaw'], quiet=True, keep_trajectories=True,
+                     reuse_grasp_plans=reuse_grasp_plans)
         result = summarize(stages, False)
         result['wall_time'] = time.monotonic() - start
         result['hand_yaw'] = next((s['hand_yaw'] for s in stages if s['stage'] == 'grasp_select'

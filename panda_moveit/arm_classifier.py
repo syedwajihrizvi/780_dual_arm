@@ -109,15 +109,18 @@ def scene_features(arm, scenario, trial):
 
 
 def load(paths, data, features='samples'):
-    """Plan files -> features (N, 2, F), labels (N,), the rule's choice (N,), keys."""
-    data = Path(data).expanduser()
-    trials, scenarios = {}, {}
-    for l in (data / 'trials.jsonl').read_text().splitlines():
-        if l:
-            t = json.loads(l)
-            trials[(t['seed'], t['task_index'])] = t
-    X, y, rule, keys = [], [], [], []
-    for path in paths:
+    """Plan files -> features (N, 2, F), labels (N,), the rule's choice (N,), keys,
+    MoveIt's best cost per arm (N, 2; nan where MoveIt found the arm infeasible)."""
+    datas = [data] * len(paths) if isinstance(data, (str, Path)) or len(data) == 1 else data
+    datas = [Path(d[0] if isinstance(d, list) else d).expanduser() for d in datas]
+    assert len(datas) == len(paths), 'give one --data, or one per plan file'
+    X, y, rule, keys, costs = [], [], [], [], []
+    for path, data in zip(paths, datas):
+        trials, scenarios = {}, {}
+        for l in (data / 'trials.jsonl').read_text().splitlines():
+            if l:
+                t = json.loads(l)
+                trials[(t['seed'], t['task_index'])] = t
         for l in Path(path).expanduser().read_text().splitlines():
             if not l:
                 continue
@@ -132,7 +135,41 @@ def load(paths, data, features='samples'):
             y.append(CLASSES.index(row['moveit_arm']))
             rule.append(CLASSES.index(row['policy_arm']))
             keys.append((row['seed'], row['task_index']))
-    return np.asarray(X, np.float32), np.asarray(y), np.asarray(rule), keys
+            costs.append([row['arms'][a]['moveit_cost'] if row['arms'][a]['moveit_feasible'] else np.nan
+                          for a in ARMS])
+    return (np.asarray(X, np.float32), np.asarray(y), np.asarray(rule), keys,
+            np.asarray(costs, np.float64))
+
+
+def soft_targets(y, costs, tau):
+    """Training targets (N, 3). tau 0: one-hot labels. tau > 0: the feasible
+    arms share the probability by softmax(-cost / tau), so a near-tie (which
+    MoveIt itself decides differently from run to run) is not taught as a
+    certain answer; tasks with no feasible arm stay "neither"."""
+    t = np.zeros((len(y), 3), np.float32)
+    if tau <= 0:
+        t[np.arange(len(y)), y] = 1
+        return t
+    for i, (c, label) in enumerate(zip(costs, y)):
+        if label == 2:
+            t[i, 2] = 1
+            continue
+        w = np.where(np.isnan(c), 0.0, np.exp(-(np.nan_to_num(c, nan=0) - np.nanmin(c)) / tau))
+        t[i, :2] = w / w.sum()
+    return t
+
+
+def metrics(pred, y, costs, tie=0.5):
+    """Agreement with MoveIt, mean regret (MoveIt cost of the chosen arm minus
+    the best, where both are arms MoveIt can do), regrets > tie, and agreement
+    allowing near-ties (a feasible arm within `tie` of the best counts as right)."""
+    best = np.nanmin(np.where(np.isnan(costs), np.inf, costs), axis=1)
+    chosen = np.array([costs[i, p] if p < 2 else np.nan for i, p in enumerate(pred)])
+    ok = (y < 2) & ~np.isnan(chosen)
+    regret = chosen[ok] - best[ok]
+    tolerant = np.where(y == 2, pred == 2, (pred < 2) & ~np.isnan(chosen) & (chosen - best <= tie))
+    return dict(agree=float(np.mean(pred == y)), regret=float(regret.mean()), big=int(np.sum(regret > tie)),
+                tolerant=float(np.mean(tolerant)))
 
 
 def mlp(inputs, hidden, layers, outputs, dropout):
@@ -181,7 +218,7 @@ def config_of(args):
                 dropout=args.dropout)
 
 
-def fit(Xtr, ytr, Xva, yva, args, log=print):
+def fit(Xtr, ytr, Xva, yva, args, log=print, costs=None):
     """Train one network; with a val set keep the best epoch, else train args.epochs.
     Returns a checkpoint dict (config, state, mean, std) and the epoch kept."""
     device = torch.device(args.device)
@@ -189,6 +226,8 @@ def fit(Xtr, ytr, Xva, yva, args, log=print):
     # Standardize with the training statistics, shared by both arms.
     mean, std = Xtr.reshape(-1, Xtr.shape[-1]).mean(0), Xtr.reshape(-1, Xtr.shape[-1]).std(0) + 1e-6
     t = lambda a, dtype=torch.float32: torch.as_tensor(a, dtype=dtype, device=device)
+    tau = getattr(args, 'tau', 0.0)
+    ttr = t(soft_targets(ytr, costs, tau) if tau > 0 else soft_targets(ytr, None, 0))
     xtr, ytr = t((Xtr - mean) / std), t(ytr, torch.long)
     validate = Xva is not None
     if validate:
@@ -202,6 +241,9 @@ def fit(Xtr, ytr, Xva, yva, args, log=print):
     model = build(config).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     loss_fn = nn.CrossEntropyLoss(weight=weights)
+
+    def train_loss(logits, target):              # soft cross-entropy, class-weighted by target
+        return -(target * weights * torch.log_softmax(logits, 1)).sum(1).mean()
     log(f'{len(xtr)} train / {len(xva) if validate else 0} val trials, {xtr.shape[-1]} features per arm, '
         f'labels {counts.int().tolist()} (first, second, neither), '
         f'{sum(p.numel() for p in model.parameters())} parameters, {device}')
@@ -211,7 +253,7 @@ def fit(Xtr, ytr, Xva, yva, args, log=print):
         model.train()
         for idx in torch.randperm(len(xtr), device=device).split(args.batch):
             opt.zero_grad()
-            loss = loss_fn(model(xtr[idx]), ytr[idx])
+            loss = train_loss(model(xtr[idx]), ttr[idx])
             loss.backward()
             opt.step()
         model.eval()
@@ -238,16 +280,16 @@ def fit(Xtr, ytr, Xva, yva, args, log=print):
         best_epoch = args.epochs
     else:
         log(f'best val accuracy {best:.3f} at epoch {best_epoch}')
-    return dict(config=config, state=best_state, mean=mean, std=std), best_epoch
+    return dict(config=config, state=best_state, mean=mean, std=std, tau=tau), best_epoch
 
 
 def train(args):
-    Xtr, ytr, _, _ = load(args.train, args.data, args.features)
+    Xtr, ytr, _, _, ctr = load(args.train, args.data, args.features)
     Xva, yva, rule_va = None, None, None
     if args.val:
-        Xva, yva, rule_va, _ = load(args.val, args.val_data or args.data, args.features)
+        Xva, yva, rule_va, _, _ = load(args.val, [args.val_data] if args.val_data else args.data, args.features)
         print(f'rule (cheapest valid sample) on val: {np.mean(rule_va == yva):.3f}')
-    checkpoint, _ = fit(Xtr, ytr, Xva, yva, args, log=lambda m: print(m, flush=True))
+    checkpoint, _ = fit(Xtr, ytr, Xva, yva, args, log=lambda m: print(m, flush=True), costs=ctr)
     torch.save(checkpoint, Path(args.out).expanduser())
     print(f'-> {args.out}')
 
@@ -261,10 +303,10 @@ def report(name, pred, y):
 def crossval(args):
     """K-fold cross-validation by seed: each fold is predicted by a network
     trained on K-2 folds and early-stopped on the next fold."""
-    X, y, rule, keys = load(args.plans, args.data, args.features)
+    X, y, rule, keys, costs = load(args.plans, args.data, args.features)
     seeds = np.array([k[0] for k in keys])
     unique = np.unique(seeds)
-    accs, epochs = [], []
+    accs, epochs, ms = [], [], []
     print(f'{len(y)} trials, {len(unique)} seeds, labels {np.bincount(y, minlength=3).tolist()}, '
           f'{args.folds} folds x {args.repeats} repeats')
     print(report('rule', rule, y))
@@ -277,19 +319,60 @@ def crossval(args):
             stop = (k + 1) % args.folds
             tr, va, te = (f != k) & (f != stop), f == stop, f == k
             args.seed = repeat * args.folds + k
-            checkpoint, epoch = fit(X[tr], y[tr], X[va], y[va], args, log=lambda m: None)
+            checkpoint, epoch = fit(X[tr], y[tr], X[va], y[va], args, log=lambda m: None, costs=costs[tr])
             pred[te] = predict(checkpoint, X[te], args.device).argmax(1)
             epochs.append(epoch)
         accs.append(np.mean(pred == y))
+        ms.append(metrics(pred, y, costs))
         print(report(f'repeat {repeat}', pred, y) +
               f'; changed {np.sum(pred != rule)}: {np.sum((pred != rule) & (pred == y))} to the label, '
               f'{np.sum((pred != rule) & (rule == y))} away', flush=True)
     print(f'network {np.mean(accs):.3f} +- {np.std(accs):.3f} vs rule {np.mean(rule == y):.3f}; '
           f'best epoch median {int(np.median(epochs))} (use as --epochs to train on all)')
+    print('network ' + fmt({k: np.mean([m[k] for m in ms]) for k in ms[0]}))
+    print('rule    ' + fmt(metrics(rule, y, costs)))
+
+
+def fmt(m):
+    return (f'agree {100 * m["agree"]:.1f}%  tolerant {100 * m["tolerant"]:.1f}%  '
+            f'regret {m["regret"]:.3f}  regret>0.5 {m["big"]:.1f}')
+
+
+def curve(args):
+    """Learning curve: cross-validation by seed as in crossval, with the
+    training folds cut to a fraction of their seeds."""
+    X, y, rule, keys, costs = load(args.plans, args.data, args.features)
+    seeds = np.array([k[0] for k in keys])
+    unique = np.unique(seeds)
+    print(f'{len(y)} trials, {len(unique)} seeds; rule ' + fmt(metrics(rule, y, costs)), flush=True)
+    for frac in args.fractions:
+        ms, ntr = [], []
+        for repeat in range(args.repeats):
+            rng = np.random.default_rng(repeat)
+            order = rng.permutation(unique)
+            fold = {s: i % args.folds for i, s in enumerate(order)}
+            f = np.array([fold[s] for s in seeds])
+            pred = np.empty_like(y)
+            for k in range(args.folds):
+                stop = (k + 1) % args.folds
+                pool = [s for s in order if fold[s] not in (k, stop)]
+                keep = set(pool[:max(1, round(frac * len(pool)))])
+                tr = np.array([s in keep for s in seeds])
+                va, te = f == stop, f == k
+                args.seed = repeat * args.folds + k
+                checkpoint, _ = fit(X[tr], y[tr], X[va], y[va], args, log=lambda m: None, costs=costs[tr])
+                pred[te] = predict(checkpoint, X[te], args.device).argmax(1)
+                ntr.append(tr.sum())
+            ms.append(metrics(pred, y, costs))
+        print(f'fraction {frac:.2f} (~{int(np.mean(ntr))} training tasks): '
+              + fmt({k: np.mean([m[k] for m in ms]) for k in ms[0]}), flush=True)
 
 
 def predict(checkpoint, X, device):
-    """Class probabilities (N, 3) for features (N, 2, F)."""
+    """Class probabilities (N, 3) for features (N, 2, F). A list of
+    checkpoints is an ensemble: their probabilities are averaged."""
+    if isinstance(checkpoint, list):
+        return np.mean([predict(c, X, device) for c in checkpoint], axis=0)
     model = build(checkpoint['config']).to(device)
     model.load_state_dict(checkpoint['state'])
     model.eval()
@@ -298,13 +381,26 @@ def predict(checkpoint, X, device):
         return torch.softmax(model(x), dim=1).cpu().numpy()
 
 
+def load_models(paths):
+    checkpoints = [torch.load(Path(p).expanduser(), weights_only=False) for p in paths]
+    assert len({c['config']['features'] for c in checkpoints}) == 1, 'ensemble members need the same features'
+    return checkpoints
+
+
 def evaluate(args):
-    checkpoint = torch.load(Path(args.model).expanduser(), weights_only=False)
-    X, y, rule, _ = load(args.plans, args.data, checkpoint['config']['features'])
-    pred = predict(checkpoint, X, args.device).argmax(1)
+    checkpoint = load_models(args.model)
+    X, y, rule, _, costs = load(args.plans, args.data, checkpoint[0]['config']['features'])
+    probs = predict(checkpoint, X, args.device)
+    if args.usable_only:
+        probs[:, :2] *= X[:, :, SAMPLE_FEATURES.index('has_valid')]
+    pred = probs.argmax(1)
     print(f'{len(y)} trials; labels: {np.bincount(y, minlength=3).tolist()} (first, second, neither)')
     print(report('rule', rule, y))
     print(report('network', pred, y))
+    print('rule    ' + fmt(metrics(rule, y, costs)))
+    print('network ' + fmt(metrics(pred, y, costs)))
+    if args.save_pred:
+        np.save(Path(args.save_pred).expanduser(), np.stack([pred, rule, y]))
     print(f'network changes the rule\'s choice in {np.sum(pred != rule)} trials: '
           f'{np.sum((pred != rule) & (pred == y))} to the label, {np.sum((pred != rule) & (rule == y))} away from it')
 
@@ -314,8 +410,8 @@ def relabel(args):
     execute_policy.py: the candidates are reordered so the chosen arm's come
     first. Only arms with a usable sample can be chosen (there is nothing to
     execute otherwise), so the network picks among those and neither."""
-    checkpoint = torch.load(Path(args.model).expanduser(), weights_only=False)
-    X, y, rule, keys = load(args.plans, args.data, checkpoint['config']['features'])
+    checkpoint = load_models(args.model)
+    X, y, rule, keys, _ = load(args.plans, args.data, checkpoint[0]['config']['features'])
     probs = predict(checkpoint, X, args.device)
     probs[:, :2] *= X[:, :, SAMPLE_FEATURES.index('has_valid')]
     pred = probs.argmax(1)
@@ -351,11 +447,12 @@ def relabel(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = p.add_subparsers(dest='command', required=True)
-    for name in ('train', 'crossval', 'evaluate', 'relabel'):
+    for name in ('train', 'crossval', 'curve', 'evaluate', 'relabel'):
         s = sub.add_parser(name)
-        s.add_argument('--data', default=str(Path.home() / 'panda_data'), help='dataset with trials.jsonl')
+        s.add_argument('--data', nargs='+', default=[str(Path.home() / 'panda_data')],
+                       help='dataset with trials.jsonl (one, or one per plan file)')
         s.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
-    for name in ('train', 'crossval'):
+    for name in ('train', 'crossval', 'curve'):
         t = sub.choices[name]
         t.add_argument('--model', choices=MODELS, default='shared')
         t.add_argument('--features', choices=FEATURE_SETS, default='samples',
@@ -370,25 +467,31 @@ def main():
         t.add_argument('--batch', type=int, default=128)
         t.add_argument('--epochs', type=int, default=300)
         t.add_argument('--patience', type=int, default=50, help='epochs without val improvement before stopping')
+        t.add_argument('--tau', type=float, default=0.0,
+                       help='soft targets from MoveIt costs, softmax(-cost / tau) over feasible arms (0: one-hot)')
     t = sub.choices['train']
     t.add_argument('--train', nargs='+', required=True, help='plan files (evaluate_policy.py --out)')
     t.add_argument('--val', nargs='+', help='plan files for early stopping (without: train --epochs)')
     t.add_argument('--val-data', help='dataset of the --val plans (default: --data)')
     t.add_argument('--seed', type=int, default=0)
     t.add_argument('--out', default=str(Path.home() / 'arm_classifier.pt'))
-    c = sub.choices['crossval']
-    c.add_argument('--plans', nargs='+', required=True)
-    c.add_argument('--folds', type=int, default=5)
-    c.add_argument('--repeats', type=int, default=3, help='fold splits and initializations')
+    for name in ('crossval', 'curve'):
+        c = sub.choices[name]
+        c.add_argument('--plans', nargs='+', required=True)
+        c.add_argument('--folds', type=int, default=5)
+        c.add_argument('--repeats', type=int, default=3, help='fold splits and initializations')
+    sub.choices['curve'].add_argument('--fractions', type=float, nargs='+', default=[0.15, 0.25, 0.5, 0.75, 1.0])
     e = sub.choices['evaluate']
-    e.add_argument('--model', required=True, help='checkpoint from train')
+    e.add_argument('--model', nargs='+', required=True, help='checkpoint(s) from train; several = ensemble')
     e.add_argument('--plans', nargs='+', required=True)
+    e.add_argument('--usable-only', action='store_true', help='choose only arms with a usable sample, as relabel')
+    e.add_argument('--save-pred', help='save (prediction, rule, label) as .npy')
     r = sub.choices['relabel']
-    r.add_argument('--model', required=True, help='checkpoint from train')
+    r.add_argument('--model', nargs='+', required=True, help='checkpoint(s) from train; several = ensemble')
     r.add_argument('--plans', nargs='+', required=True, help='evaluate_policy.py --save-trajectories output')
     r.add_argument('--out', required=True)
     args = p.parse_args()
-    dict(train=train, crossval=crossval, evaluate=evaluate, relabel=relabel)[args.command](args)
+    dict(train=train, crossval=crossval, curve=curve, evaluate=evaluate, relabel=relabel)[args.command](args)
 
 
 if __name__ == '__main__':

@@ -40,6 +40,7 @@ GRIPPER_MID = (GRIPPER_OPEN + GRIPPER_CLOSE) / 2
 GOAL_TOLERANCE = 0.03   # m; enough for cost estimation, not for execution
 STILL = 0.005           # rad per frame: below this the arm counts as stopped
 MAX_CHUNKS = 2
+RETREAT_FRAMES = 5      # frames after the release that count as the retreat (1 s at 5 Hz)
 LAMBDA = 1.0            # pick_place.LAMBDA
 EXEC_TOLERANCE = 0.01   # m; grasping a 4 cm cube cleanly needs the hand within ~1 cm
 
@@ -126,10 +127,11 @@ def phase(traj):
     return 2 if (traj[closed[0]:, 7] > GRIPPER_MID).any() else 1
 
 
-def rollout(sampler, start, env, images, samples, guide=None):
+def rollout(sampler, start, env, images, samples, guide=None, enough=None):
     """K samples per arm, all arms in one batch per chunk. start/env/images
     are dicts by arm; guide: (Guide, iters, lr, guided steps) or None. Returns {arm: list
-    of (frames, 8) arrays}."""
+    of (frames, 8) arrays}. enough: called with that dict after the first chunk;
+    if it returns True, no second chunk is sampled for the unfinished samples."""
     arms = list(start)
     trajs = {(a, k): [np.asarray(start[a], np.float32)] for a in arms for k in range(samples)}
 
@@ -143,6 +145,11 @@ def rollout(sampler, start, env, images, samples, guide=None):
     for key, chunk in zip(trajs, chunks):
         trajs[key].extend(chunk)
     active = [key for key in trajs if not finished(np.array(trajs[key]))]
+    # A second chunk only when there is nothing to execute yet: the stragglers
+    # rarely add a usable sample (on validation they changed the arm in 1 of
+    # 600 trials) and cost a full denoising pass.
+    if active and enough and enough({a: [np.array(trajs[(a, k)]) for k in range(samples)] for a in arms}):
+        active = []
     for _ in range(MAX_CHUNKS - 1):
         if not active:
             break
@@ -157,9 +164,17 @@ def rollout(sampler, start, env, images, samples, guide=None):
 
 
 def finished(traj):
+    """Released the cube, and either retreated for RETREAT_FRAMES or stopped.
+    Waiting for stillness alone sampled a second chunk for nearly every
+    sample: they jitter above STILL long after the release."""
     closed = np.flatnonzero(traj[:, 7] < GRIPPER_MID)
-    if not len(closed) or not (traj[closed[0]:, 7] > GRIPPER_MID).any():
+    if not len(closed):
         return False
+    opened = np.flatnonzero(traj[closed[0]:, 7] > GRIPPER_MID)
+    if not len(opened):
+        return False
+    if len(traj) - 1 - (closed[0] + opened[0]) >= RETREAT_FRAMES:
+        return True
     return np.abs(np.diff(traj[-3:, :7], axis=0)).max() < STILL
 
 
@@ -174,6 +189,22 @@ def score_arm(trajs, arm, scenario, trial, fps):
     ends = [motion_end(t) for t in trajs]
     collisions = check_many([t[:e, :7] for t, e in zip(trajs, ends)], arm, scenario)
     return [score(t, e, c, arm, trial, fps) for t, e, c in zip(trajs, ends, collisions)]
+
+
+def score_arms(samples, scene, trial, fps, device):
+    """score_arm for both arms, with the collision check on the GPU
+    (Guide.clearance, the same sphere model) in one pass."""
+    rows = [(a, t) for a in ARMS for t in samples[a]]
+    ends = [motion_end(t) for _, t in rows]
+    joints = np.zeros((len(rows), max(ends), 7), np.float32)
+    for i, ((_, t), e) in enumerate(zip(rows, ends)):
+        joints[i, :e] = t[:e, :7]
+        joints[i, e:] = t[e - 1, :7]
+    collisions = scene.clearance(torch.as_tensor(joints, device=device), [a for a, _ in rows], ends)
+    scores = {a: [] for a in ARMS}
+    for (a, t), e, c in zip(rows, ends, collisions):
+        scores[a].append(score(t, e, c, a, trial, fps))
+    return scores
 
 
 def score(traj, end, collision, arm, trial, fps):
@@ -228,6 +259,7 @@ def main():
     p.add_argument('--guide-lr', type=float, default=1.0, help='gradient step size')
     p.add_argument('--guide-steps', type=int, default=5, help='guide only the last N denoising steps')
     p.add_argument('--no-bf16', action='store_true', help='sample in float32')
+    p.add_argument('--cpu-check', action='store_true', help='score with collision_check.py (numpy) instead of the GPU')
     p.add_argument('--out', default=str(Path.home() / 'eval.jsonl'))
     args = p.parse_args()
 
@@ -257,15 +289,25 @@ def main():
         if device == 'cuda':
             torch.cuda.synchronize()
         t0 = time.perf_counter()
+        # The scene as tensors: used by the guidance and by the collision scoring.
+        scene_model = Guide(scenario, trial, device, args.guide_obstacle, args.guide_goal, args.guide_smooth,
+                            args.guide_margin, GRIPPER_MID)
         guide = None
         if args.guide_obstacle or args.guide_goal:
-            guide = (Guide(scenario, trial, device, args.guide_obstacle, args.guide_goal, args.guide_smooth,
-                           args.guide_margin, GRIPPER_MID), args.guide_iters, args.guide_lr, args.guide_steps)
-        samples = rollout(sampler, start, env, images, args.samples, guide)
+            guide = (scene_model, args.guide_iters, args.guide_lr, args.guide_steps)
+        def score_all(samples):
+            if args.cpu_check:
+                return {a: score_arm(samples[a], a, scenario, trial, args.fps) for a in ARMS}
+            return score_arms(samples, scene_model, trial, args.fps, device)
+
+        def usable_after_one_chunk(samples):
+            return any(s['valid'] and s['clearance'] >= args.clearance
+                       for arm_scores in score_all(samples).values() for s in arm_scores)
+        samples = rollout(sampler, start, env, images, args.samples, guide, usable_after_one_chunk)
         if device == 'cuda':
             torch.cuda.synchronize()
         t1 = time.perf_counter()
-        scores = {a: score_arm(samples[a], a, scenario, trial, args.fps) for a in ARMS}
+        scores = score_all(samples)
         t2 = time.perf_counter()
 
         row = dict(seed=trial['seed'], task_index=trial['task_index'], clearance_margin=args.clearance,

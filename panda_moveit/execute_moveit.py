@@ -34,22 +34,29 @@ from scenario import ScenarioApplier
 DISTURB = 0.01  # m, as in execute_policy.py
 
 
-def run_trial(applier, trial, scenario):
+def run_trial(applier, trial, scenario, plan_only=False, reuse_grasp_plans=False):
     cube = next(c for c in scenario['cubes'] if c['name'] == trial['cube'])
     place_xyz = trial['place_xyz']
-    applier.apply(scenario)
+    # Plan-only runs leave the scene as they found it: one apply per scenario.
+    if not plan_only or getattr(applier, 'applied', None) != trial['scenario']:
+        applier.apply(scenario)
+        applier.applied = trial['scenario']
 
     # Decision: one plan per arm, as a planner-based assignment would do.
     start = time.monotonic()
-    plans = {a: plan_arm(applier.arms[a], cube, place_xyz, repeats=1) for a in ARMS}
+    plans = {a: plan_arm(applier.arms[a], cube, place_xyz, repeats=1, reuse_grasp_plans=reuse_grasp_plans)
+             for a in ARMS}
     decision_time = time.monotonic() - start
     costs = {a: p['best_cost'] for a, p in plans.items() if p['feasible']}
     arm = min(costs, key=costs.get) if costs else None
     result = dict(arm=arm, decision_time=decision_time,
                   plan_costs={a: p['best_cost'] for a, p in plans.items()},
                   plan_durations={a: p['best_trajectory_duration'] for a, p in plans.items()},
+                  # Per arm: wall time of its plan, and the part MoveIt reports as planning.
+                  arm_times={a: p['single_plan_wall_time'] for a, p in plans.items()},
+                  arm_planner_times={a: p['plans'][0]['total_planning_time'] for a, p in plans.items()},
                   success=False, failed_stage=None if arm else 'no_plan')
-    if arm is None:
+    if arm is None or plan_only:
         return result
 
     # Plan-only runs leave the scene as they found it, so execute from here.
@@ -102,6 +109,9 @@ def main():
     p.add_argument('--data', default=str(Path.home() / 'panda_data'))
     p.add_argument('--out', default=str(Path.home() / 'moveit_results.jsonl'))
     p.add_argument('--max-trials', type=int)
+    p.add_argument('--plan-only', action='store_true', help='time the decision only; execute nothing')
+    p.add_argument('--reuse-grasp-plans', action='store_true',
+                   help='decision: keep the pregrasp and descent planned during grasp selection')
     p.add_argument('--speed', type=float, default=0.5)
     p.add_argument('--accel', type=float, default=0.5)
     args = p.parse_args()
@@ -133,7 +143,7 @@ def main():
                 row = dict(seed=trial['seed'], task_index=trial['task_index'],
                            label_arm=min(labels, key=labels.get) if labels else None)
                 try:
-                    row.update(run_trial(applier, trial, scenario))
+                    row.update(run_trial(applier, trial, scenario, args.plan_only, args.reuse_grasp_plans))
                 except Exception as e:  # unattended: record it and go on
                     row.update(arm=None, success=False, failed_stage='error', decision_time=None,
                                error=f'{type(e).__name__}: {e}')

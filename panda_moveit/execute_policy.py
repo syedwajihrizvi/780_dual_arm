@@ -188,6 +188,7 @@ class SceneChecker:
         remove.header.frame_id = self.scene.planning_frame
         self.scene.apply_collision_object(remove)
         self.state = RobotState(self.model)
+        self.starts = {arm: [float(v) for v in q[:7]] + [0.04, 0.04] for arm, q in starts.items()}
         self.state.joint_positions = {
             name: value for arm, q in starts.items()
             for name, value in zip([f'{arm}_panda_joint{i}' for i in range(1, 8)]
@@ -197,10 +198,14 @@ class SceneChecker:
 
     def colliding(self, arm, state):
         width = float(min(max(state[7], 0.0), 0.04))
-        self.state.joint_positions = dict(zip(
-            [f'{arm}_panda_joint{i}' for i in range(1, 8)]
-            + [f'{arm}_panda_finger_joint1', f'{arm}_panda_finger_joint2'],
-            [float(v) for v in state[:7]] + [width, width]))
+        # Both arms every time: the checked arm at this state, the other at
+        # its start. The state object is shared, so an arm left at a colliding
+        # state by an earlier candidate would fail every candidate of the other arm.
+        values = dict(self.starts, **{arm: [float(v) for v in state[:7]] + [width, width]})
+        self.state.joint_positions = {
+            name: value for a, q in values.items()
+            for name, value in zip([f'{a}_panda_joint{i}' for i in range(1, 8)]
+                                   + [f'{a}_panda_finger_joint1', f'{a}_panda_finger_joint2'], q)}
         self.state.update()
         result = CollisionResult()
         self.scene.check_collision(self.request, result, self.state, self.scene.allowed_collision_matrix)
@@ -273,7 +278,10 @@ def closest(traj, arm, frame, target):
 
 def execute(applier, checker, logs, plan, trial, scenario, args, vmax):
     cube = trial['cube']
-    applier.apply(scenario)
+    # --check-only moves nothing, so one apply per scenario is enough.
+    if not args.check_only or getattr(applier, 'applied', None) != trial['scenario']:
+        applier.apply(scenario)
+        applier.applied = trial['scenario']
     before = gz_model_poses()
     checker.load(cube, scenario['arm_starts'])
     candidates = plan.get('candidates') or [dict(arm=plan['policy_arm'], trajectory=plan['trajectory'],
@@ -293,6 +301,10 @@ def execute(applier, checker, logs, plan, trial, scenario, args, vmax):
             return result
         result['candidate'] = len(clear) - 1
     chosen = candidates[result['candidate']]
+    if args.check_only:
+        result.update(arm=chosen['arm'], policy_arm=chosen['arm'], success=False, failed_stage='check_only',
+                      moveit_contacts=[])
+        return result
     arm = chosen['arm']
     node = applier.arms[arm]
     traj = np.asarray(chosen['trajectory'])
@@ -430,6 +442,11 @@ def main():
     p.add_argument('--exact-check', action='store_true',
                    help='execute the first candidate with no MoveIt contact (needs candidates in --plans)')
     p.add_argument('--retime', action='store_true', help='skip the frames where the arm barely moves')
+    p.add_argument('--check-only', action='store_true',
+                   help='run the exact check and record which candidate it picks; execute nothing')
+    p.add_argument('--moveit-fallback', action='store_true',
+                   help='when the policy declines (no arm, or no clear candidate), let MoveIt plan both '
+                        'arms and execute; its decision time is added to the policy\'s')
     args = p.parse_args()
 
     data = Path(args.data).expanduser()
@@ -488,6 +505,26 @@ def main():
                           f"{'ok' if row['success'] else 'failed at ' + str(row['failed_stage'])}"
                           f", contacts {row.get('moveit_contacts')}, tracking "
                           f"{row.get('tracking_error', 0):.3f} rad", flush=True)
+                if args.moveit_fallback and not row.get('policy_arm'):
+                    from execute_moveit import run_trial   # imports collect; only needed here
+                    scenario = json.loads((data / trial['scenario']).read_text())
+                    declined = row.get('failed_stage') or 'no_arm'
+                    try:
+                        fb = run_trial(applier, trial, scenario)
+                    except Exception as e:
+                        fb = dict(arm=None, success=False, failed_stage='error', decision_time=0.0,
+                                  error=f'{type(e).__name__}: {e}')
+                    # The executed motion is MoveIt's: its cost and duration stand in the policy's fields.
+                    row.update(fallback=True, policy_declined=declined, fallback_decision_time=fb['decision_time'],
+                               policy_decision_time=row['policy_decision_time'] + (fb['decision_time'] or 0.0),
+                               policy_arm=fb['arm'], arm=fb['arm'], success=fb['success'],
+                               failed_stage=fb['failed_stage'], policy_cost=fb.get('executed_cost'),
+                               policy_duration=fb.get('motion_time'), sampled_duration=fb.get('motion_time'),
+                               duration=fb.get('execute_wall_time'), place_error=fb.get('place_error'),
+                               disturbed=fb.get('disturbed', []), moveit_contacts=[])
+                    print(f"seed {row['seed']} task {row['task_index']} fallback to MoveIt ({declined}) "
+                          f"{row['arm']}: {'ok' if row['success'] else 'failed at ' + str(row['failed_stage'])}",
+                          flush=True)
                 out.write(json.dumps(row) + '\n')
                 out.flush()
                 rows.append(row)

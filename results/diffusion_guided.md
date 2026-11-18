@@ -1,5 +1,7 @@
 # Guided diffusion sampling: test seeds 1850–1999
 
+> **Correction, 2026-11-15.** MoveIt's planning time was overstated: it is 0.38 s, not 0.88 s, so with this sampler (0.40 s) guided diffusion was not faster than MoveIt. The faster sampler brings it to 0.16 s. With the exact-check fix, success on doable tasks is 92.5%, not 91.8% (93.8% with the faster sampler). See [corrections_and_fast_sampler.md](corrections_and_fast_sampler.md).
+
 Date: 2026-11-04. This is the same checkpoint, execution and checks as [diffusion_fixed.md](diffusion_fixed.md) (`--exact-check --retime`). The only change is how the samples are drawn: the denoising process is steered toward collision-free trajectories that grasp and place accurately. This is the project's novel contribution.
 
 ## Method
